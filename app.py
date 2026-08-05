@@ -5,7 +5,7 @@ from datetime import datetime, date, timedelta
 import io
 import os
 import urllib.request
-from fpdf import FPDF
+from fpdf import FPDF  # هذا سيعمل مع fpdf2
 import shutil
 import zipfile
 import json
@@ -43,7 +43,6 @@ def get_db():
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    # جداول أساسية
     c.execute('''CREATE TABLE IF NOT EXISTS units (id INTEGER PRIMARY KEY AUTOINCREMENT, unit_name TEXT UNIQUE, unit_symbol TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS categories (id INTEGER PRIMARY KEY AUTOINCREMENT, category_name TEXT UNIQUE, description TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS storage_locations (id INTEGER PRIMARY KEY AUTOINCREMENT, location_name TEXT UNIQUE, description TEXT)''')
@@ -60,6 +59,7 @@ def init_db():
                  qty_remaining REAL, is_consumed BOOLEAN DEFAULT 0)''')
     c.execute('''CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password TEXT, role TEXT,
                  full_name TEXT, is_active BOOLEAN DEFAULT 1)''')
+
     # بيانات أولية
     for u_name, u_sym in [('قطعة','قطعة'),('لتر','لتر'),('كيلو','كجم'),('متر','متر'),('كرتونة','كرتونة'),('رول','رول'),('زجاجة','زجاجة')]:
         c.execute("INSERT OR IGNORE INTO units (unit_name, unit_symbol) VALUES (?,?)",(u_name,u_sym))
@@ -104,7 +104,7 @@ def check_perm(role=None):
 def has_role(role):
     return st.session_state.get('user',{}).get('role')==role
 
-# ======================== دوال PDF بالعربية ========================
+# ======================== دوال PDF بالعربية (fpdf2) ========================
 def get_arabic_font():
     path = "Amiri-Regular.ttf"
     if not os.path.exists(path):
@@ -114,6 +114,7 @@ def get_arabic_font():
     return path if os.path.exists(path) else None
 
 def reverse_arabic(text):
+    """عكس النص العربي ليظهر بالاتجاه الصحيح في fpdf2"""
     if not re.search('[\u0600-\u06FF]', str(text)): return text
     parts = re.split('([\u0600-\u06FF]+)', str(text))
     res = []
@@ -123,15 +124,18 @@ def reverse_arabic(text):
     return ''.join(res)
 
 def generate_pdf(title, df, cols_map=None):
-    font = get_arabic_font()
+    font_path = get_arabic_font()
     pdf = FPDF()
     pdf.add_page()
-    if font: pdf.add_font("Amiri","",font); pdf.set_font("Amiri", size=14)
-    else: pdf.set_font("Helvetica", size=14)
-    pdf.cell(0,10,reverse_arabic(title),ln=True,align='C')
+    if font_path:
+        pdf.add_font("Amiri", fname=font_path)     # fpdf2 تدعم التحميل المباشر للـ ttf
+        pdf.set_font("Amiri", size=14)
+    else:
+        pdf.set_font("Helvetica", size=14)
+    pdf.cell(0,10, reverse_arabic(title), ln=True, align='C')
     pdf.ln(10)
     if df.empty:
-        pdf.cell(0,10,"لا توجد بيانات",ln=True)
+        pdf.cell(0,10,"لا توجد بيانات", ln=True)
         return bytes(pdf.output())
     if cols_map: df = df.rename(columns=cols_map)
     cols = list(df.columns)
@@ -148,14 +152,14 @@ def generate_pdf(title, df, cols_map=None):
         widths = [w*scale for w in widths]
     pdf.set_fill_color(0,168,107); pdf.set_text_color(255,255,255)
     for i,col in enumerate(cols):
-        pdf.cell(widths[i],10,reverse_arabic(str(col)), border=1, fill=True, align='C')
+        pdf.cell(widths[i],10, reverse_arabic(str(col)), border=1, fill=True, align='C')
     pdf.ln()
     pdf.set_text_color(0,0,0)
-    pdf.set_font("Amiri","",10) if font else pdf.set_font("Helvetica","",10)
+    pdf.set_font("Amiri", size=10) if font_path else pdf.set_font("Helvetica", size=10)
     for _,row in df.iterrows():
         for i,col in enumerate(cols):
             v = str(row[col]) if pd.notnull(row[col]) else '-'
-            pdf.cell(widths[i],8,reverse_arabic(v), border=1, align='C')
+            pdf.cell(widths[i],8, reverse_arabic(v), border=1, align='C')
         pdf.ln()
     return bytes(pdf.output())
 
@@ -171,7 +175,7 @@ def export_buttons(df, prefix, pdf_title=None):
             pdf_bytes = generate_pdf(pdf_title, df)
             st.download_button("📄 PDF", data=pdf_bytes, file_name=f"{prefix}_{date.today()}.pdf")
 
-# ======================== النسخ الاحتياطي ========================
+# ======================== النسخ الاحتياطي (كما سبق) ========================
 def load_backup_config():
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE,'r',encoding='utf-8') as f: return json.load(f)
@@ -226,6 +230,31 @@ def restore_backup(zip_path):
     except Exception as e:
         return False, str(e)
 
+# ======================== دالة حذف حركة مع عكس تأثيرها على المخزون ========================
+def delete_transaction(trans_id):
+    conn = get_db()
+    trans = conn.execute("SELECT * FROM transactions WHERE id=?", (trans_id,)).fetchone()
+    if not trans:
+        conn.close()
+        return False, "الحركة غير موجودة"
+    # عكس تأثير الحركة على رصيد الصنف
+    item_id = trans['item_id']
+    qty = trans['qty']
+    typ = trans['transaction_type']
+    if typ == 'وارد' or typ == 'تسوية إضافة':
+        # تقليل الرصيد
+        conn.execute("UPDATE items SET current_balance = current_balance - ?, last_updated=? WHERE id=?",
+                     (qty, date.today().isoformat(), item_id))
+    elif typ == 'صادر' or typ == 'تسوية عجز':
+        # زيادة الرصيد
+        conn.execute("UPDATE items SET current_balance = current_balance + ?, last_updated=? WHERE id=?",
+                     (qty, date.today().isoformat(), item_id))
+    # حذف الحركة
+    conn.execute("DELETE FROM transactions WHERE id=?", (trans_id,))
+    conn.commit()
+    conn.close()
+    return True, "تم حذف الحركة بنجاح"
+
 # ======================== بدء التشغيل ========================
 init_db()
 if 'logged_in' not in st.session_state:
@@ -249,12 +278,11 @@ st.sidebar.write(f"مرحباً {st.session_state.user['full_name']} ({st.sessio
 if st.sidebar.button("تسجيل الخروج"): logout()
 st.sidebar.divider()
 
-# بناء القائمة حسب الدور
 menu = []
 if check_perm():
     menu = ["📊 لوحة التحكم","📦 إدارة الأصناف","📂 التصنيفات والوحدات","🏨 الفنادق","🏢 الموردين",
             "📍 أماكن التخزين","📥 الوارد","📤 الصادر","📝 الجرد","⚠️ الصلاحيات","📈 التقارير",
-            "💾 النسخ الاحتياطي","👥 المستخدمين"]
+            "🗑️ إدارة الحركات (حذف)","💾 النسخ الاحتياطي","👥 المستخدمين"]
 elif has_role('purchasing'):
     menu = ["📊 لوحة التحكم","📥 الوارد","📈 التقارير","⚠️ الصلاحيات"]
 elif has_role('disbursement'):
@@ -264,7 +292,7 @@ elif has_role('supervisor'):
 
 choice = st.sidebar.radio("القائمة", menu)
 
-# -------------------- تنفيذ الصفحات --------------------
+# ======================== تنفيذ الصفحات ========================
 if choice == "📊 لوحة التحكم":
     st.header("لوحة التحكم")
     conn = get_db()
@@ -283,6 +311,7 @@ if choice == "📊 لوحة التحكم":
     conn.close()
 
 elif choice == "📦 إدارة الأصناف":
+    if not check_perm(): st.error("غير مصرح"); st.stop()
     st.header("إدارة الأصناف")
     conn = get_db()
     tab1, tab2 = st.tabs(["إضافة صنف","قائمة الأصناف"])
@@ -317,6 +346,7 @@ elif choice == "📦 إدارة الأصناف":
     conn.close()
 
 elif choice == "📂 التصنيفات والوحدات":
+    if not check_perm(): st.error("غير مصرح"); st.stop()
     st.header("التصنيفات والوحدات")
     conn = get_db()
     tab1,tab2,tab3 = st.tabs(["تصنيفات","وحدات","أماكن تخزين"])
@@ -347,35 +377,92 @@ elif choice == "📂 التصنيفات والوحدات":
     conn.close()
 
 elif choice == "🏨 الفنادق":
+    if not check_perm(): st.error("غير مصرح"); st.stop()
     st.header("الفنادق")
     conn = get_db()
-    with st.form("add_hotel"):
-        name = st.text_input("اسم الفندق")
-        contact = st.text_input("الشخص المسؤول")
-        phone = st.text_input("الهاتف")
-        if st.form_submit_button("إضافة"):
-            conn.execute("INSERT OR IGNORE INTO hotels (name,contact_person,phone) VALUES (?,?,?)",(name,contact,phone))
-            conn.commit(); st.success("تم"); st.rerun()
-    hotels = conn.execute("SELECT * FROM hotels").fetchall()
-    if hotels:
-        st.dataframe(pd.DataFrame(hotels, columns=['م','الفندق','المسؤول','الهاتف','ملاحظات']))
+    tab1, tab2 = st.tabs(["إضافة فندق","تعديل فندق"])
+    with tab1:
+        with st.form("add_hotel"):
+            name = st.text_input("اسم الفندق")
+            contact = st.text_input("الشخص المسؤول")
+            phone = st.text_input("الهاتف")
+            if st.form_submit_button("إضافة"):
+                conn.execute("INSERT OR IGNORE INTO hotels (name,contact_person,phone) VALUES (?,?,?)",(name,contact,phone))
+                conn.commit(); st.success("تم"); st.rerun()
+    with tab2:
+        hotels = conn.execute("SELECT * FROM hotels").fetchall()
+        if hotels:
+            hotel_names = [h['name'] for h in hotels]
+            selected = st.selectbox("اختر الفندق للتعديل", hotel_names)
+            h = [h for h in hotels if h['name']==selected][0]
+            new_name = st.text_input("الاسم الجديد", value=h['name'])
+            new_contact = st.text_input("الشخص المسؤول", value=h['contact_person'] or "")
+            new_phone = st.text_input("الهاتف", value=h['phone'] or "")
+            if st.button("حفظ التعديلات"):
+                if new_name and new_name != selected:
+                    # التحقق من عدم وجود اسم مكرر
+                    exists = conn.execute("SELECT id FROM hotels WHERE name=? AND id!=?",(new_name,h['id'])).fetchone()
+                    if exists:
+                        st.error("الاسم موجود مسبقاً")
+                    else:
+                        conn.execute("UPDATE hotels SET name=?, contact_person=?, phone=? WHERE id=?",
+                                     (new_name, new_contact, new_phone, h['id']))
+                        conn.commit()
+                        st.success("تم التعديل (الحركات السابقة مرتبطة برقم الفندق وستظهر بالاسم الجديد تلقائياً)")
+                        st.rerun()
+                else:
+                    conn.execute("UPDATE hotels SET name=?, contact_person=?, phone=? WHERE id=?",
+                                 (new_name, new_contact, new_phone, h['id']))
+                    conn.commit()
+                    st.success("تم التعديل")
+                    st.rerun()
+        else:
+            st.info("لا توجد فنادق")
     conn.close()
 
 elif choice == "🏢 الموردين":
+    if not check_perm(): st.error("غير مصرح"); st.stop()
     st.header("الموردين")
     conn = get_db()
-    with st.form("add_sup"):
-        name = st.text_input("اسم المورد")
-        info = st.text_input("معلومات الاتصال")
-        if st.form_submit_button("إضافة"):
-            conn.execute("INSERT OR IGNORE INTO suppliers (supplier_name,contact_info) VALUES (?,?)",(name,info))
-            conn.commit(); st.success("تم"); st.rerun()
-    supps = conn.execute("SELECT * FROM suppliers").fetchall()
-    if supps:
-        st.dataframe(pd.DataFrame(supps, columns=['م','المورد','الاتصال','ملاحظات']))
+    tab1, tab2 = st.tabs(["إضافة مورد","تعديل مورد"])
+    with tab1:
+        with st.form("add_sup"):
+            name = st.text_input("اسم المورد")
+            info = st.text_input("معلومات الاتصال")
+            if st.form_submit_button("إضافة"):
+                conn.execute("INSERT OR IGNORE INTO suppliers (supplier_name,contact_info) VALUES (?,?)",(name,info))
+                conn.commit(); st.success("تم"); st.rerun()
+    with tab2:
+        supps = conn.execute("SELECT * FROM suppliers").fetchall()
+        if supps:
+            supp_names = [s['supplier_name'] for s in supps]
+            selected = st.selectbox("اختر المورد للتعديل", supp_names)
+            s = [s for s in supps if s['supplier_name']==selected][0]
+            new_name = st.text_input("الاسم الجديد", value=s['supplier_name'])
+            new_info = st.text_input("معلومات الاتصال", value=s['contact_info'] or "")
+            if st.button("حفظ التعديلات"):
+                if new_name and new_name != selected:
+                    exists = conn.execute("SELECT id FROM suppliers WHERE supplier_name=? AND id!=?",(new_name,s['id'])).fetchone()
+                    if exists:
+                        st.error("الاسم موجود مسبقاً")
+                    else:
+                        conn.execute("UPDATE suppliers SET supplier_name=?, contact_info=? WHERE id=?",
+                                     (new_name, new_info, s['id']))
+                        conn.commit()
+                        st.success("تم التعديل")
+                        st.rerun()
+                else:
+                    conn.execute("UPDATE suppliers SET supplier_name=?, contact_info=? WHERE id=?",
+                                 (new_name, new_info, s['id']))
+                    conn.commit()
+                    st.success("تم التعديل")
+                    st.rerun()
+        else:
+            st.info("لا يوجد موردين")
     conn.close()
 
 elif choice == "📍 أماكن التخزين":
+    if not check_perm(): st.error("غير مصرح"); st.stop()
     st.header("أماكن التخزين")
     conn = get_db()
     with st.form("add_loc2"):
@@ -498,6 +585,27 @@ elif choice == "📈 التقارير":
             export_buttons(df, "ارصدة", "تقرير الأرصدة")
     conn.close()
 
+elif choice == "🗑️ إدارة الحركات (حذف)":
+    if not has_role('super_admin'): st.error("فقط المدير العام يمكنه حذف الحركات"); st.stop()
+    st.header("إدارة الحركات - حذف حركة")
+    conn = get_db()
+    # عرض أحدث 50 حركة
+    trans = conn.execute("SELECT t.id, t.transaction_type, i.name, COALESCE(h.name,'-'), t.qty, t.transaction_date, t.notes FROM transactions t JOIN items i ON t.item_id=i.id LEFT JOIN hotels h ON t.hotel_id=h.id ORDER BY t.id DESC LIMIT 50").fetchall()
+    if trans:
+        df = pd.DataFrame(trans, columns=['رقم الحركة','النوع','الصنف','الفندق','الكمية','التاريخ','ملاحظات'])
+        st.dataframe(df)
+        trans_id = st.number_input("أدخل رقم الحركة المراد حذفها", min_value=1, step=1)
+        if st.button("حذف الحركة واسترجاع تأثيرها"):
+            success, msg = delete_transaction(trans_id)
+            if success:
+                st.success(msg)
+                st.rerun()
+            else:
+                st.error(msg)
+    else:
+        st.info("لا توجد حركات")
+    conn.close()
+
 elif choice == "💾 النسخ الاحتياطي":
     st.header("النسخ الاحتياطي")
     notes = st.text_input("ملاحظات")
@@ -517,20 +625,19 @@ elif choice == "💾 النسخ الاحتياطي":
             else: st.error(msg)
 
 elif choice == "👥 المستخدمين":
-    if not has_role('super_admin'): st.error("غير مصرح")
-    else:
-        st.header("المستخدمين")
-        conn = get_db()
-        users = conn.execute("SELECT username, role, full_name FROM users").fetchall()
-        st.dataframe(pd.DataFrame(users, columns=['مستخدم','دور','اسم']))
-        with st.form("add_user"):
-            un = st.text_input("اسم المستخدم")
-            pw = st.text_input("كلمة المرور", type="password")
-            fn = st.text_input("الاسم الكامل")
-            role = st.selectbox("الدور", ['super_admin','purchasing','disbursement','supervisor'])
-            if st.form_submit_button("إضافة"):
-                try:
-                    conn.execute("INSERT INTO users (username,password,role,full_name) VALUES (?,?,?,?)",(un, hash_password(pw), role, fn))
-                    conn.commit(); st.success("تم"); st.rerun()
-                except: st.error("مستخدم موجود مسبقاً")
-        conn.close()
+    if not has_role('super_admin'): st.error("غير مصرح"); st.stop()
+    st.header("المستخدمين")
+    conn = get_db()
+    users = conn.execute("SELECT username, role, full_name FROM users").fetchall()
+    st.dataframe(pd.DataFrame(users, columns=['مستخدم','دور','اسم']))
+    with st.form("add_user"):
+        un = st.text_input("اسم المستخدم")
+        pw = st.text_input("كلمة المرور", type="password")
+        fn = st.text_input("الاسم الكامل")
+        role = st.selectbox("الدور", ['super_admin','purchasing','disbursement','supervisor'])
+        if st.form_submit_button("إضافة"):
+            try:
+                conn.execute("INSERT INTO users (username,password,role,full_name) VALUES (?,?,?,?)",(un, hash_password(pw), role, fn))
+                conn.commit(); st.success("تم"); st.rerun()
+            except: st.error("مستخدم موجود مسبقاً")
+    conn.close()
