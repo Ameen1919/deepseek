@@ -13,30 +13,46 @@ import hashlib
 import re
 import arabic_reshaper
 from bidi.algorithm import get_display
+import base64
 
 # ======================== إعدادات الصفحة ========================
 st.set_page_config(page_title="مخزن النظافة", layout="wide", initial_sidebar_state="expanded")
 
-# سنطبق حجم الخط الديناميكي لاحقًا
+# ======================== إدارة الثيم والخط ========================
 if 'font_size' not in st.session_state:
-    st.session_state.font_size = 100  # النسبة المئوية
+    st.session_state.font_size = 100
+if 'theme_color' not in st.session_state:
+    st.session_state.theme_color = "#00a86b"
+if 'logo_path' not in st.session_state:
+    st.session_state.logo_path = None
 
-# CSS ديناميكي يعتمد على حجم الخط المختار
-st.markdown(f"""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;900&display=swap');
-*{{font-family:'Tajawal',sans-serif}}
-html,body,[class*="css"]{{direction:rtl;text-align:right;font-size:{st.session_state.font_size}% !important}}
-.stock-critical{{background-color:#ff4444;color:white;padding:5px 10px;border-radius:5px}}
-.stock-warning{{background-color:#ffbb33;color:black;padding:5px 10px;border-radius:5px}}
-.stock-good{{background-color:#00C851;color:white;padding:5px 10px;border-radius:5px}}
-</style>""", unsafe_allow_html=True)
+def apply_theme():
+    st.markdown(f"""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;900&display=swap');
+    *{{font-family:'Tajawal',sans-serif}}
+    html,body,[class*="css"]{{direction:rtl;text-align:right;font-size:{st.session_state.font_size}% !important}}
+    .stApp {{
+        background-color: {st.session_state.theme_color};
+        background-image: linear-gradient(135deg, {st.session_state.theme_color} 0%, #ffffff 100%);
+    }}
+    .stock-critical{{background-color:#ff4444;color:white;padding:5px 10px;border-radius:5px}}
+    .stock-warning{{background-color:#ffbb33;color:black;padding:5px 10px;border-radius:5px}}
+    .stock-good{{background-color:#00C851;color:white;padding:5px 10px;border-radius:5px}}
+    </style>""", unsafe_allow_html=True)
+
+apply_theme()
 
 DB_NAME = 'cleaning_inventory.db'
 BACKUP_FOLDER = 'backups'
+ATTACHMENTS_FOLDER = 'attachments'
 CONFIG_FILE = 'backup_config.json'
+LOGO_FILE = 'logo.png'
+
 if not os.path.exists(BACKUP_FOLDER):
     os.makedirs(BACKUP_FOLDER)
+if not os.path.exists(ATTACHMENTS_FOLDER):
+    os.makedirs(ATTACHMENTS_FOLDER)
 
 # ======================== دوال مساعدة ========================
 def hash_password(pwd):
@@ -50,11 +66,9 @@ def get_db():
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    # الوحدات
+
     c.execute('''CREATE TABLE IF NOT EXISTS units (id INTEGER PRIMARY KEY AUTOINCREMENT, unit_name TEXT UNIQUE, unit_symbol TEXT)''')
-    # الموردين
     c.execute('''CREATE TABLE IF NOT EXISTS suppliers (id INTEGER PRIMARY KEY AUTOINCREMENT, supplier_name TEXT UNIQUE, contact_info TEXT, notes TEXT)''')
-    # الأصناف (بدون تصنيف أو مكان تخزين)
     c.execute('''CREATE TABLE IF NOT EXISTS items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         item_code TEXT UNIQUE,
@@ -72,9 +86,7 @@ def init_db():
         FOREIGN KEY (unit_id) REFERENCES units(id),
         FOREIGN KEY (primary_supplier_id) REFERENCES suppliers(id)
     )''')
-    # الفنادق
     c.execute('''CREATE TABLE IF NOT EXISTS hotels (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, contact_person TEXT, phone TEXT, notes TEXT)''')
-    # الحركات
     c.execute('''CREATE TABLE IF NOT EXISTS transactions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         transaction_type TEXT,
@@ -87,11 +99,16 @@ def init_db():
         transaction_date TEXT,
         notes TEXT,
         created_by TEXT DEFAULT 'أمين المخزن',
+        attachment TEXT,
         FOREIGN KEY (item_id) REFERENCES items(id),
         FOREIGN KEY (hotel_id) REFERENCES hotels(id),
         FOREIGN KEY (unit_id) REFERENCES units(id)
     )''')
-    # الجرد
+    try:
+        c.execute("ALTER TABLE transactions ADD COLUMN attachment TEXT")
+    except sqlite3.OperationalError:
+        pass
+
     c.execute('''CREATE TABLE IF NOT EXISTS inventory_counts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         count_date TEXT,
@@ -103,7 +120,6 @@ def init_db():
         counted_by TEXT,
         FOREIGN KEY (item_id) REFERENCES items(id)
     )''')
-    # تنبيهات الصلاحية
     c.execute('''CREATE TABLE IF NOT EXISTS expiry_alerts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         item_id INTEGER,
@@ -113,7 +129,6 @@ def init_db():
         is_consumed BOOLEAN DEFAULT 0,
         FOREIGN KEY (item_id) REFERENCES items(id)
     )''')
-    # المستخدمين
     c.execute('''CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT UNIQUE NOT NULL,
@@ -123,12 +138,10 @@ def init_db():
         is_active BOOLEAN DEFAULT 1
     )''')
 
-    # إدخال بيانات أساسية (الوحدات فقط)
     for u_name, u_sym in [('قطعة','قطعة'),('لتر','لتر'),('كيلو','كجم'),('متر','متر'),
                          ('كرتونة','كرتونة'),('رول','رول'),('زجاجة','زجاجة'),('علبة','علبة'),('كيس','كيس')]:
         c.execute("INSERT OR IGNORE INTO units (unit_name, unit_symbol) VALUES (?,?)",(u_name,u_sym))
 
-    # المستخدمين الافتراضيين
     default_users = [
         ('admin',hash_password('admin123'),'super_admin','المدير العام'),
         ('مشتريات',hash_password('buy123'),'purchasing','مسؤول المشتريات'),
@@ -141,7 +154,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-# ======================== دوال المصادقة ========================
 def login(username, password):
     conn = get_db()
     user = conn.execute("SELECT * FROM users WHERE username=? AND password=? AND is_active=1",
@@ -167,7 +179,7 @@ def check_perm(role=None):
 def has_role(role):
     return st.session_state.get('user',{}).get('role')==role
 
-# ======================== دوال PDF بالعربية ========================
+# ======================== PDF عربي ========================
 def get_arabic_font():
     path = "Amiri-Regular.ttf"
     if not os.path.exists(path):
@@ -177,7 +189,6 @@ def get_arabic_font():
     return path if os.path.exists(path) else None
 
 def shape_arabic(text):
-    """إعادة تشكيل النص العربي مع الاتجاه الصحيح باستخدام arabic_reshaper و bidi"""
     if not re.search('[\u0600-\u06FF]', str(text)):
         return text
     reshaped = arabic_reshaper.reshape(str(text))
@@ -290,7 +301,6 @@ def restore_backup(zip_path):
     except Exception as e:
         return False, str(e)
 
-# ======================== دالة حذف حركة مع عكس تأثيرها ========================
 def delete_transaction(trans_id):
     conn = get_db()
     trans = conn.execute("SELECT * FROM transactions WHERE id=?", (trans_id,)).fetchone()
@@ -301,15 +311,23 @@ def delete_transaction(trans_id):
     qty = trans['qty']
     typ = trans['transaction_type']
     if typ == 'وارد' or typ == 'تسوية إضافة':
-        conn.execute("UPDATE items SET current_balance = current_balance - ?, last_updated=? WHERE id=?",
-                     (qty, date.today().isoformat(), item_id))
+        conn.execute("UPDATE items SET current_balance = current_balance - ?, last_updated=? WHERE id=?", (qty, date.today().isoformat(), item_id))
     elif typ == 'صادر' or typ == 'تسوية عجز':
-        conn.execute("UPDATE items SET current_balance = current_balance + ?, last_updated=? WHERE id=?",
-                     (qty, date.today().isoformat(), item_id))
+        conn.execute("UPDATE items SET current_balance = current_balance + ?, last_updated=? WHERE id=?", (qty, date.today().isoformat(), item_id))
     conn.execute("DELETE FROM transactions WHERE id=?", (trans_id,))
     conn.commit()
     conn.close()
     return True, "تم حذف الحركة بنجاح"
+
+def save_attachment(uploaded_file, transaction_id):
+    if uploaded_file is None:
+        return None
+    file_ext = os.path.splitext(uploaded_file.name)[1]
+    safe_name = f"trans_{transaction_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}{file_ext}"
+    file_path = os.path.join(ATTACHMENTS_FOLDER, safe_name)
+    with open(file_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    return safe_name
 
 # ======================== بدء التشغيل ========================
 init_db()
@@ -330,20 +348,31 @@ if not st.session_state.logged_in:
 
 # -------------------- الشريط الجانبي --------------------
 st.sidebar.title("🧹 مخزن النظافة")
+if st.session_state.logo_path and os.path.exists(st.session_state.logo_path):
+    st.sidebar.image(st.session_state.logo_path, width=150)
 st.sidebar.write(f"مرحباً {st.session_state.user['full_name']} ({st.session_state.user['role']})")
 if st.sidebar.button("تسجيل الخروج"): logout()
-
-# شريط تمرير حجم الخط
 st.sidebar.divider()
-st.sidebar.subheader("🔤 حجم الخط")
-new_font_size = st.sidebar.slider("النسبة المئوية", 50, 200, st.session_state.font_size, step=10)
-if new_font_size != st.session_state.font_size:
+
+# إعدادات المظهر
+st.sidebar.subheader("🎨 إعدادات المظهر")
+new_font_size = st.sidebar.slider("حجم الخط (%)", 50, 200, st.session_state.font_size, step=10, key="global_font")
+theme_color = st.sidebar.color_picker("لون البرنامج", st.session_state.theme_color, key="global_theme")
+st.sidebar.markdown("---")
+uploaded_logo = st.sidebar.file_uploader("📷 رفع شعار", type=["png","jpg","jpeg"])
+if uploaded_logo:
+    with open(LOGO_FILE, "wb") as f:
+        f.write(uploaded_logo.getbuffer())
+    st.session_state.logo_path = LOGO_FILE
+    st.rerun()
+
+if new_font_size != st.session_state.font_size or theme_color != st.session_state.theme_color:
     st.session_state.font_size = new_font_size
+    st.session_state.theme_color = theme_color
     st.rerun()
 
 st.sidebar.divider()
 
-# القائمة حسب الدور
 menu = []
 if check_perm():
     menu = ["📊 لوحة التحكم","📦 إدارة الأصناف","📏 الوحدات","🏨 الفنادق","🏢 الموردين",
@@ -358,7 +387,7 @@ elif has_role('supervisor'):
 
 choice = st.sidebar.radio("القائمة", menu)
 
-# ======================== تنفيذ الصفحات ========================
+# ======================== الصفحات ========================
 if choice == "📊 لوحة التحكم":
     st.header("لوحة التحكم")
     conn = get_db()
@@ -381,10 +410,8 @@ elif choice == "📦 إدارة الأصناف":
     st.header("إدارة الأصناف")
     conn = get_db()
     tab1, tab2 = st.tabs(["إضافة صنف","تعديل/حذف صنف"])
-    # تجهيز قوائم الوحدات والموردين
     units = conn.execute("SELECT id, unit_name, unit_symbol FROM units").fetchall()
     suppliers = conn.execute("SELECT id, supplier_name FROM suppliers").fetchall()
-
     with tab1:
         with st.form("add_item"):
             name = st.text_input("اسم الصنف *")
@@ -401,19 +428,15 @@ elif choice == "📦 إدارة الأصناف":
                 else:
                     unit_id = [u['id'] for u in units if f"{u['unit_name']} ({u['unit_symbol']})"==unit][0]
                     supp_id = None if supplier=="-" else [s['id'] for s in suppliers if s['supplier_name']==supplier][0]
-                    # توليد كود بسيط
                     code = f"ITM-{datetime.now().strftime('%Y%m%d%H%M%S')}"
                     try:
-                        conn.execute("""INSERT INTO items (item_code, name, unit_id, min_qty, max_qty, current_balance,
-                                      primary_supplier_id, shelf_life_days, notes, created_date, last_updated)
-                                      VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                                     (code, name.strip(), unit_id, min_q, max_q, init_bal, supp_id, shelf_life, notes,
-                                      date.today().isoformat(), date.today().isoformat()))
+                        conn.execute("INSERT INTO items (item_code, name, unit_id, min_qty, max_qty, current_balance, primary_supplier_id, shelf_life_days, notes, created_date, last_updated) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                                     (code, name.strip(), unit_id, min_q, max_q, init_bal, supp_id, shelf_life, notes, date.today().isoformat(), date.today().isoformat()))
                         conn.commit()
-                        st.success(f"تمت إضافة الصنف '{name}' بنجاح")
+                        st.success(f"تمت إضافة '{name}'")
                         st.rerun()
                     except sqlite3.IntegrityError:
-                        st.error("اسم الصنف موجود مسبقاً! الرجاء اختيار اسم آخر.")
+                        st.error("اسم الصنف موجود مسبقاً!")
     with tab2:
         items = conn.execute("SELECT id, item_code, name, current_balance, unit_id, min_qty, max_qty, is_active FROM items").fetchall()
         if items:
@@ -440,48 +463,46 @@ elif choice == "📦 إدارة الأصناف":
                         else:
                             unit_id = units[[u for u in units if f"{u['unit_name']} ({u['unit_symbol']})"==new_unit][0]]['id']
                             try:
-                                conn.execute("""UPDATE items SET name=?, unit_id=?, min_qty=?, max_qty=?, is_active=?, last_updated=?
-                                              WHERE id=?""",
+                                conn.execute("UPDATE items SET name=?, unit_id=?, min_qty=?, max_qty=?, is_active=?, last_updated=? WHERE id=?",
                                              (new_name.strip(), unit_id, new_min, new_max, int(active), date.today().isoformat(), selected_id))
                                 conn.commit()
-                                st.success("تم التعديل بنجاح")
+                                st.success("تم التعديل")
                                 st.rerun()
                             except sqlite3.IntegrityError:
                                 st.error("اسم الصنف موجود مسبقاً!")
                 with col2:
                     if st.button("حذف (تعطيل)"):
-                        # تعطيل الصنف بدلاً من الحذف الفعلي
-                        conn.execute("UPDATE items SET is_active=0, last_updated=? WHERE id=?",
-                                     (date.today().isoformat(), selected_id))
+                        conn.execute("UPDATE items SET is_active=0, last_updated=? WHERE id=?", (date.today().isoformat(), selected_id))
                         conn.commit()
-                        st.success("تم تعطيل الصنف (لن يظهر في القوائم)")
+                        st.success("تم تعطيل الصنف")
                         st.rerun()
         else:
-            st.info("لا توجد أصناف مسجلة")
+            st.info("لا توجد أصناف")
     conn.close()
 
 elif choice == "📏 الوحدات":
     if not check_perm(): st.error("غير مصرح"); st.stop()
-    st.header("إدارة وحدات القياس")
+    st.header("وحدات القياس")
     conn = get_db()
     with st.form("add_unit"):
-        u_name = st.text_input("اسم الوحدة")
-        u_sym = st.text_input("الرمز")
+        un = st.text_input("اسم الوحدة")
+        us = st.text_input("الرمز")
         if st.form_submit_button("إضافة"):
-            if u_name:
-                conn.execute("INSERT OR IGNORE INTO units (unit_name, unit_symbol) VALUES (?,?)",(u_name,u_sym))
+            if un:
+                conn.execute("INSERT OR IGNORE INTO units (unit_name, unit_symbol) VALUES (?,?)",(un,us))
                 conn.commit()
-                st.success("تمت الإضافة"); st.rerun()
-    units_list = conn.execute("SELECT * FROM units").fetchall()
-    if units_list:
-        st.dataframe(pd.DataFrame(units_list, columns=['م','الوحدة','الرمز']))
+                st.success("تم")
+                st.rerun()
+    units = conn.execute("SELECT * FROM units").fetchall()
+    if units:
+        st.dataframe(pd.DataFrame(units, columns=['م','الوحدة','الرمز']))
     conn.close()
 
 elif choice == "🏨 الفنادق":
     if not check_perm(): st.error("غير مصرح"); st.stop()
     st.header("الفنادق")
     conn = get_db()
-    tab1, tab2 = st.tabs(["إضافة فندق","تعديل فندق"])
+    tab1, tab2 = st.tabs(["إضافة","تعديل"])
     with tab1:
         with st.form("add_hotel"):
             name = st.text_input("اسم الفندق")
@@ -494,7 +515,7 @@ elif choice == "🏨 الفنادق":
         hotels = conn.execute("SELECT * FROM hotels").fetchall()
         if hotels:
             hotel_names = [h['name'] for h in hotels]
-            selected = st.selectbox("اختر الفندق للتعديل", hotel_names)
+            selected = st.selectbox("اختر الفندق", hotel_names)
             h = [h for h in hotels if h['name']==selected][0]
             new_name = st.text_input("الاسم الجديد", value=h['name'])
             new_contact = st.text_input("الشخص المسؤول", value=h['contact_person'] or "")
@@ -502,29 +523,23 @@ elif choice == "🏨 الفنادق":
             if st.button("حفظ التعديلات"):
                 if new_name and new_name != selected:
                     exists = conn.execute("SELECT id FROM hotels WHERE name=? AND id!=?",(new_name,h['id'])).fetchone()
-                    if exists:
-                        st.error("الاسم موجود مسبقاً")
+                    if exists: st.error("الاسم موجود")
                     else:
-                        conn.execute("UPDATE hotels SET name=?, contact_person=?, phone=? WHERE id=?",
-                                     (new_name, new_contact, new_phone, h['id']))
+                        conn.execute("UPDATE hotels SET name=?, contact_person=?, phone=? WHERE id=?",(new_name, new_contact, new_phone, h['id']))
                         conn.commit()
-                        st.success("تم التعديل (الحركات السابقة مرتبطة برقم الفندق وستظهر بالاسم الجديد)")
-                        st.rerun()
+                        st.success("تم التعديل"); st.rerun()
                 else:
-                    conn.execute("UPDATE hotels SET name=?, contact_person=?, phone=? WHERE id=?",
-                                 (new_name, new_contact, new_phone, h['id']))
+                    conn.execute("UPDATE hotels SET name=?, contact_person=?, phone=? WHERE id=?",(new_name, new_contact, new_phone, h['id']))
                     conn.commit()
-                    st.success("تم التعديل")
-                    st.rerun()
-        else:
-            st.info("لا توجد فنادق")
+                    st.success("تم التعديل"); st.rerun()
+        else: st.info("لا توجد فنادق")
     conn.close()
 
 elif choice == "🏢 الموردين":
     if not check_perm(): st.error("غير مصرح"); st.stop()
     st.header("الموردين")
     conn = get_db()
-    tab1, tab2 = st.tabs(["إضافة مورد","تعديل مورد"])
+    tab1, tab2 = st.tabs(["إضافة","تعديل"])
     with tab1:
         with st.form("add_sup"):
             name = st.text_input("اسم المورد")
@@ -536,29 +551,21 @@ elif choice == "🏢 الموردين":
         supps = conn.execute("SELECT * FROM suppliers").fetchall()
         if supps:
             supp_names = [s['supplier_name'] for s in supps]
-            selected = st.selectbox("اختر المورد للتعديل", supp_names)
+            selected = st.selectbox("اختر المورد", supp_names)
             s = [s for s in supps if s['supplier_name']==selected][0]
             new_name = st.text_input("الاسم الجديد", value=s['supplier_name'])
             new_info = st.text_input("معلومات الاتصال", value=s['contact_info'] or "")
             if st.button("حفظ التعديلات"):
                 if new_name and new_name != selected:
                     exists = conn.execute("SELECT id FROM suppliers WHERE supplier_name=? AND id!=?",(new_name,s['id'])).fetchone()
-                    if exists:
-                        st.error("الاسم موجود مسبقاً")
+                    if exists: st.error("الاسم موجود")
                     else:
-                        conn.execute("UPDATE suppliers SET supplier_name=?, contact_info=? WHERE id=?",
-                                     (new_name, new_info, s['id']))
-                        conn.commit()
-                        st.success("تم التعديل")
-                        st.rerun()
+                        conn.execute("UPDATE suppliers SET supplier_name=?, contact_info=? WHERE id=?",(new_name, new_info, s['id']))
+                        conn.commit(); st.success("تم"); st.rerun()
                 else:
-                    conn.execute("UPDATE suppliers SET supplier_name=?, contact_info=? WHERE id=?",
-                                 (new_name, new_info, s['id']))
-                    conn.commit()
-                    st.success("تم التعديل")
-                    st.rerun()
-        else:
-            st.info("لا يوجد موردين")
+                    conn.execute("UPDATE suppliers SET supplier_name=?, contact_info=? WHERE id=?",(new_name, new_info, s['id']))
+                    conn.commit(); st.success("تم"); st.rerun()
+        else: st.info("لا يوجد موردين")
     conn.close()
 
 elif choice == "📥 الوارد":
@@ -572,16 +579,20 @@ elif choice == "📥 الوارد":
             batch = st.text_input("رقم التشغيلة")
             exp_date = st.date_input("تاريخ انتهاء الصلاحية", date.today()+timedelta(days=365))
             notes = st.text_input("ملاحظات")
+            uploaded_file = st.file_uploader("📎 إرفاق ملف (صورة أو PDF)", type=["png","jpg","jpeg","pdf"])
             if st.form_submit_button("تسجيل"):
                 it = [i for i in items if i['name']==item][0]
                 conn.execute("""INSERT INTO transactions (transaction_type,item_id,qty,unit_id,batch_number,expiry_date,transaction_date,notes,created_by)
                               VALUES (?,?,?,?,?,?,?,?,?)""",
                              ('وارد',it['id'],qty,it['unit_id'],batch,exp_date.isoformat(),date.today().isoformat(),notes,st.session_state.user['full_name']))
-                conn.execute("UPDATE items SET current_balance=current_balance+?, last_updated=? WHERE id=?",
-                             (qty,date.today().isoformat(),it['id']))
+                trans_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+                attachment_name = None
+                if uploaded_file:
+                    attachment_name = save_attachment(uploaded_file, trans_id)
+                    conn.execute("UPDATE transactions SET attachment=? WHERE id=?", (attachment_name, trans_id))
+                conn.execute("UPDATE items SET current_balance=current_balance+?, last_updated=? WHERE id=?",(qty,date.today().isoformat(),it['id']))
                 if exp_date:
-                    conn.execute("INSERT INTO expiry_alerts (item_id,batch_number,expiry_date,qty_remaining) VALUES (?,?,?,?)",
-                                 (it['id'],batch,exp_date.isoformat(),qty))
+                    conn.execute("INSERT INTO expiry_alerts (item_id,batch_number,expiry_date,qty_remaining) VALUES (?,?,?,?)",(it['id'],batch,exp_date.isoformat(),qty))
                 conn.commit()
                 st.success("تم تسجيل المشتريات")
                 st.rerun()
@@ -598,6 +609,7 @@ elif choice == "📤 الصادر":
             hotel = st.selectbox("الفندق", [h['name'] for h in hotels])
             qty = st.number_input("الكمية",0.1,100000.0,1.0)
             notes = st.text_input("ملاحظات")
+            uploaded_file = st.file_uploader("📎 إرفاق ملف (صورة أو PDF)", type=["png","jpg","jpeg","pdf"])
             if st.form_submit_button("صرف"):
                 it_name = item.split(" (")[0]
                 it = [i for i in items if i['name']==it_name][0]
@@ -606,10 +618,13 @@ elif choice == "📤 الصادر":
                 else:
                     conn.execute("""INSERT INTO transactions (transaction_type,item_id,hotel_id,qty,unit_id,transaction_date,notes,created_by)
                                   VALUES (?,?,?,?,?,?,?,?)""",
-                                 ('صادر',it['id'],[h['id'] for h in hotels if h['name']==hotel][0],qty,it['unit_id'],
-                                  date.today().isoformat(),notes,st.session_state.user['full_name']))
-                    conn.execute("UPDATE items SET current_balance=current_balance-?, last_updated=? WHERE id=?",
-                                 (qty,date.today().isoformat(),it['id']))
+                                 ('صادر',it['id'],[h['id'] for h in hotels if h['name']==hotel][0],qty,it['unit_id'],date.today().isoformat(),notes,st.session_state.user['full_name']))
+                    trans_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+                    attachment_name = None
+                    if uploaded_file:
+                        attachment_name = save_attachment(uploaded_file, trans_id)
+                        conn.execute("UPDATE transactions SET attachment=? WHERE id=?", (attachment_name, trans_id))
+                    conn.execute("UPDATE items SET current_balance=current_balance-?, last_updated=? WHERE id=?",(qty,date.today().isoformat(),it['id']))
                     conn.commit()
                     st.success("تم الصرف")
                     st.rerun()
@@ -629,8 +644,7 @@ elif choice == "📝 الجرد":
             diff = actual - it['current_balance']
             if diff != 0:
                 conn.execute("INSERT INTO transactions (transaction_type,item_id,qty,unit_id,transaction_date,notes,created_by) VALUES (?,?,?,?,?,?,?)",
-                             ('تسوية إضافة' if diff>0 else 'تسوية عجز', it['id'], abs(diff), it['unit_id'],
-                              date.today().isoformat(), notes, st.session_state.user['full_name']))
+                             ('تسوية إضافة' if diff>0 else 'تسوية عجز', it['id'], abs(diff), it['unit_id'], date.today().isoformat(), notes, st.session_state.user['full_name']))
             conn.execute("UPDATE items SET current_balance=?, last_updated=? WHERE id=?",(actual,date.today().isoformat(),it['id']))
             conn.execute("INSERT INTO inventory_counts (count_date,item_id,expected_qty,actual_qty,difference,notes,counted_by) VALUES (?,?,?,?,?,?,?)",
                          (date.today().isoformat(),it['id'],it['current_balance'],actual,diff,notes,st.session_state.user['full_name']))
@@ -646,8 +660,7 @@ elif choice == "⚠️ الصلاحيات":
     today = date.today()
     exp = conn.execute("""SELECT i.name, ea.batch_number, ea.expiry_date, ea.qty_remaining, u.unit_symbol
                         FROM expiry_alerts ea JOIN items i ON ea.item_id=i.id LEFT JOIN units u ON i.unit_id=u.id
-                        WHERE ea.is_consumed=0 AND ea.expiry_date<=? ORDER BY ea.expiry_date""",
-                       ((today+timedelta(days=days)).isoformat(),)).fetchall()
+                        WHERE ea.is_consumed=0 AND ea.expiry_date<=? ORDER BY ea.expiry_date""", ((today+timedelta(days=days)).isoformat(),)).fetchall()
     if exp:
         df = pd.DataFrame(exp, columns=['الصنف','تشغيلة','تاريخ الانتهاء','الكمية','الوحدة'])
         st.dataframe(df)
@@ -659,49 +672,87 @@ elif choice == "⚠️ الصلاحيات":
 elif choice == "📈 التقارير":
     st.header("التقارير")
     conn = get_db()
-    tab1,tab2 = st.tabs(["حركات","أرصدة"])
+    tab1, tab2 = st.tabs(["حركات", "أرصدة"])
     with tab1:
-        d1 = st.date_input("من", date.today()-timedelta(days=30))
-        d2 = st.date_input("إلى", date.today())
-        typ = st.selectbox("النوع",["الكل","وارد","صادر","تسوية إضافة","تسوية عجز"])
-        q = """SELECT t.id, t.transaction_type, i.name, COALESCE(h.name,'-'), t.qty, u.unit_symbol, t.transaction_date, t.notes
-               FROM transactions t JOIN items i ON t.item_id=i.id LEFT JOIN hotels h ON t.hotel_id=h.id
-               LEFT JOIN units u ON t.unit_id=u.id WHERE t.transaction_date BETWEEN ? AND ?"""
+        st.subheader("تقرير الحركات")
+        col1, col2, col3 = st.columns(3)
+        with col1: d1 = st.date_input("من", date.today()-timedelta(days=30))
+        with col2: d2 = st.date_input("إلى", date.today())
+        with col3: typ = st.selectbox("النوع",["الكل","وارد","صادر","تسوية إضافة","تسوية عجز"])
+        hotels = conn.execute("SELECT id, name FROM hotels").fetchall()
+        hotel_names = ["الكل"] + [h['name'] for h in hotels]
+        selected_hotel = st.selectbox("الفندق", hotel_names)
+        with st.expander("🎨 تنسيق الجدول"):
+            font_scale = st.slider("حجم الخط (%)", 50, 200, 100, step=10, key="report_font")
+            color_option = st.selectbox("لون الجدول", ["افتراضي","أخضر","أزرق","رمادي","برتقالي"], key="report_color")
+            color_map = {"افتراضي":"#f0f2f6","أخضر":"#e6ffe6","أزرق":"#e6f0ff","رمادي":"#f5f5f5","برتقالي":"#fff3e6"}
+            bg_color = color_map.get(color_option, "#f0f2f6")
+        query = """
+            SELECT t.id, t.transaction_date, i.name AS item_name, t.transaction_type, t.qty, u.unit_symbol,
+                   COALESCE(h.name, '-') AS hotel_name, t.notes, t.attachment
+            FROM transactions t
+            JOIN items i ON t.item_id = i.id
+            LEFT JOIN hotels h ON t.hotel_id = h.id
+            LEFT JOIN units u ON t.unit_id = u.id
+            WHERE t.transaction_date BETWEEN ? AND ?
+        """
         params = [d1.isoformat(), d2.isoformat()]
         if typ!="الكل":
-            q += " AND t.transaction_type=?"; params.append(typ)
-        q += " ORDER BY t.id DESC"
-        data = conn.execute(q, params).fetchall()
+            query += " AND t.transaction_type = ?"
+            params.append(typ)
+        if selected_hotel!="الكل":
+            hotel_id = [h['id'] for h in hotels if h['name']==selected_hotel][0]
+            query += " AND t.hotel_id = ?"
+            params.append(hotel_id)
+        query += " ORDER BY t.id DESC"
+        data = conn.execute(query, params).fetchall()
         if data:
-            df = pd.DataFrame(data, columns=['رقم','النوع','الصنف','الفندق','الكمية','الوحدة','التاريخ','ملاحظات'])
-            st.dataframe(df)
-            export_buttons(df, "حركات", "تقرير الحركات")
+            df = pd.DataFrame(data, columns=['رقم الحركة','التاريخ','الصنف','النوع','الكمية','الوحدة','الفندق','ملاحظات','مرفق'])
+            def attachment_link(fname):
+                if fname:
+                    path = os.path.join(ATTACHMENTS_FOLDER, fname)
+                    if os.path.exists(path):
+                        with open(path,"rb") as f:
+                            b64 = base64.b64encode(f.read()).decode()
+                        return f'<a href="data:application/octet-stream;base64,{b64}" download="{fname}">📎 تحميل</a>'
+                return ""
+            df['مرفق'] = df['مرفق'].apply(attachment_link)
+            st.dataframe(df, use_container_width=True)
+            st.markdown(f"""
+            <style>
+            div[data-testid="stDataFrame"] div[data-testid="stTable"] {{ font-size: {font_scale}% !important; }}
+            div[data-testid="stDataFrame"] table {{ background-color: {bg_color} !important; }}
+            </style>""", unsafe_allow_html=True)
+            export_df = df.drop(columns=['مرفق'], errors='ignore')
+            export_buttons(export_df, "حركات", "تقرير الحركات")
+        else:
+            st.info("لا توجد حركات")
     with tab2:
-        items = conn.execute("SELECT i.item_code,i.name,i.current_balance,u.unit_symbol FROM items i LEFT JOIN units u ON i.unit_id=u.id WHERE i.is_active=1").fetchall()
+        st.subheader("تقرير الأرصدة")
+        items = conn.execute("SELECT i.item_code, i.name, i.current_balance, u.unit_symbol FROM items i LEFT JOIN units u ON i.unit_id=u.id WHERE i.is_active=1").fetchall()
         if items:
             df = pd.DataFrame(items, columns=['كود','الصنف','الرصيد','الوحدة'])
-            st.dataframe(df)
+            st.dataframe(df, use_container_width=True)
             export_buttons(df, "ارصدة", "تقرير الأرصدة")
+        else:
+            st.info("لا توجد أصناف نشطة")
     conn.close()
 
 elif choice == "🗑️ إدارة الحركات (حذف)":
-    if not has_role('super_admin'): st.error("فقط المدير العام يمكنه حذف الحركات"); st.stop()
-    st.header("إدارة الحركات - حذف حركة")
+    if not has_role('super_admin'): st.error("فقط المدير العام"); st.stop()
+    st.header("حذف حركة")
     conn = get_db()
     trans = conn.execute("""SELECT t.id, t.transaction_type, i.name, COALESCE(h.name,'-'), t.qty, t.transaction_date, t.notes
                            FROM transactions t JOIN items i ON t.item_id=i.id LEFT JOIN hotels h ON t.hotel_id=h.id
                            ORDER BY t.id DESC LIMIT 50""").fetchall()
     if trans:
-        df = pd.DataFrame(trans, columns=['رقم الحركة','النوع','الصنف','الفندق','الكمية','التاريخ','ملاحظات'])
+        df = pd.DataFrame(trans, columns=['رقم','النوع','الصنف','الفندق','الكمية','التاريخ','ملاحظات'])
         st.dataframe(df)
-        trans_id = st.number_input("أدخل رقم الحركة المراد حذفها", min_value=1, step=1)
+        trans_id = st.number_input("أدخل رقم الحركة للحذف", min_value=1, step=1)
         if st.button("حذف الحركة واسترجاع تأثيرها"):
-            success, msg = delete_transaction(trans_id)
-            if success:
-                st.success(msg)
-                st.rerun()
-            else:
-                st.error(msg)
+            ok, msg = delete_transaction(trans_id)
+            if ok: st.success(msg); st.rerun()
+            else: st.error(msg)
     else:
         st.info("لا توجد حركات")
     conn.close()
@@ -737,8 +788,7 @@ elif choice == "👥 المستخدمين":
         role = st.selectbox("الدور", ['super_admin','purchasing','disbursement','supervisor'])
         if st.form_submit_button("إضافة"):
             try:
-                conn.execute("INSERT INTO users (username,password,role,full_name) VALUES (?,?,?,?)",
-                             (un, hash_password(pw), role, fn))
+                conn.execute("INSERT INTO users (username,password,role,full_name) VALUES (?,?,?,?)",(un, hash_password(pw), role, fn))
                 conn.commit(); st.success("تم"); st.rerun()
-            except: st.error("مستخدم موجود مسبقاً")
+            except: st.error("مستخدم موجود")
     conn.close()
