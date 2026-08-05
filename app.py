@@ -16,7 +16,7 @@ from bidi.algorithm import get_display
 import base64
 
 # ======================== إعدادات الصفحة ========================
-st.set_page_config(page_title="مخزن النظافة", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="مخزن سى خرة", layout="wide", initial_sidebar_state="expanded")
 
 # ======================== إدارة الثيم والخط ========================
 if 'font_size' not in st.session_state:
