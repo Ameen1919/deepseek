@@ -673,20 +673,53 @@ elif choice == "📈 التقارير":
     st.header("التقارير")
     conn = get_db()
     tab1, tab2 = st.tabs(["حركات", "أرصدة"])
+
     with tab1:
         st.subheader("تقرير الحركات")
         col1, col2, col3 = st.columns(3)
-        with col1: d1 = st.date_input("من", date.today()-timedelta(days=30))
-        with col2: d2 = st.date_input("إلى", date.today())
-        with col3: typ = st.selectbox("النوع",["الكل","وارد","صادر","تسوية إضافة","تسوية عجز"])
+        with col1:
+            d1 = st.date_input("من", date.today() - timedelta(days=30))
+        with col2:
+            d2 = st.date_input("إلى", date.today())
+        with col3:
+            typ = st.selectbox("النوع", ["الكل", "وارد", "صادر", "تسوية إضافة", "تسوية عجز"])
+
         hotels = conn.execute("SELECT id, name FROM hotels").fetchall()
         hotel_names = ["الكل"] + [h['name'] for h in hotels]
         selected_hotel = st.selectbox("الفندق", hotel_names)
-        with st.expander("🎨 تنسيق الجدول"):
+
+        # ------------------- خيارات تنسيق الجدول -------------------
+        with st.expander("🎨 تنسيق الجدول وترتيب الأعمدة"):
             font_scale = st.slider("حجم الخط (%)", 50, 200, 100, step=10, key="report_font")
-            color_option = st.selectbox("لون الجدول", ["افتراضي","أخضر","أزرق","رمادي","برتقالي"], key="report_color")
-            color_map = {"افتراضي":"#f0f2f6","أخضر":"#e6ffe6","أزرق":"#e6f0ff","رمادي":"#f5f5f5","برتقالي":"#fff3e6"}
+            color_option = st.selectbox("لون الجدول", ["افتراضي", "أخضر", "أزرق", "رمادي", "برتقالي"], key="report_color")
+            color_map = {
+                "افتراضي": "#f0f2f6",
+                "أخضر": "#e6ffe6",
+                "أزرق": "#e6f0ff",
+                "رمادي": "#f5f5f5",
+                "برتقالي": "#fff3e6"
+            }
             bg_color = color_map.get(color_option, "#f0f2f6")
+
+            # قائمة الأعمدة المتاحة
+            all_columns = ['رقم الحركة', 'التاريخ', 'الصنف', 'النوع', 'الكمية', 'الوحدة', 'الفندق', 'ملاحظات', 'مرفق']
+            # التأكد من وجود مفتاح الجلسة للترتيب
+            if 'selected_columns_order' not in st.session_state:
+                st.session_state.selected_columns_order = ['رقم الحركة', 'التاريخ', 'الصنف', 'النوع', 'الكمية', 'الوحدة', 'الفندق', 'ملاحظات', 'مرفق']
+
+            # نعرض قائمة متعددة الخيارات للمستخدم يختار منها ويرتبها (سيظهر حسب ترتيب الاختيار)
+            new_order = st.multiselect(
+                "اختر الأعمدة ورتبها (اسحب العناصر للإعادة ترتيبها أو انقر لإلغاء التحديد وإعادة التحديد)",
+                options=all_columns,
+                default=st.session_state.selected_columns_order,
+                key="columns_order_multiselect"
+            )
+            # عند تغيير الترتيب، نحفظه في الجلسة ونعيد التشغيل
+            if new_order != st.session_state.selected_columns_order:
+                st.session_state.selected_columns_order = new_order
+                st.rerun()
+
+        # ------------------- بناء الاستعلام -------------------
         query = """
             SELECT t.id, t.transaction_date, i.name AS item_name, t.transaction_type, t.qty, u.unit_symbol,
                    COALESCE(h.name, '-') AS hotel_name, t.notes, t.attachment
@@ -697,45 +730,85 @@ elif choice == "📈 التقارير":
             WHERE t.transaction_date BETWEEN ? AND ?
         """
         params = [d1.isoformat(), d2.isoformat()]
-        if typ!="الكل":
+
+        if typ != "الكل":
             query += " AND t.transaction_type = ?"
             params.append(typ)
-        if selected_hotel!="الكل":
-            hotel_id = [h['id'] for h in hotels if h['name']==selected_hotel][0]
+
+        if selected_hotel != "الكل":
+            hotel_id = [h['id'] for h in hotels if h['name'] == selected_hotel][0]
             query += " AND t.hotel_id = ?"
             params.append(hotel_id)
+
         query += " ORDER BY t.id DESC"
+
         data = conn.execute(query, params).fetchall()
+
+        # ------------------- عرض البيانات -------------------
         if data:
-            df = pd.DataFrame(data, columns=['رقم الحركة','التاريخ','الصنف','النوع','الكمية','الوحدة','الفندق','ملاحظات','مرفق'])
+            # إنشاء DataFrame بالترتيب الأصلي للأعمدة (كما هو في الاستعلام)
+            df = pd.DataFrame(data, columns=[
+                'رقم الحركة', 'التاريخ', 'الصنف', 'النوع', 'الكمية', 'الوحدة', 'الفندق', 'ملاحظات', 'مرفق'
+            ])
+
+            # تحويل عمود المرفق إلى رابط تحميل
             def attachment_link(fname):
                 if fname:
                     path = os.path.join(ATTACHMENTS_FOLDER, fname)
                     if os.path.exists(path):
-                        with open(path,"rb") as f:
+                        with open(path, "rb") as f:
                             b64 = base64.b64encode(f.read()).decode()
                         return f'<a href="data:application/octet-stream;base64,{b64}" download="{fname}">📎 تحميل</a>'
                 return ""
             df['مرفق'] = df['مرفق'].apply(attachment_link)
-            st.dataframe(df, use_container_width=True)
+
+            # إعادة ترتيب الأعمدة حسب اختيار المستخدم (مع الاحتفاظ بباقي الأعمدة إن وجدت)
+            ordered_columns = st.session_state.selected_columns_order
+            # نتأكد من وجود جميع الأعمدة المختارة في DataFrame
+            ordered_columns = [col for col in ordered_columns if col in df.columns]
+            # نضيف أي أعمدة غير موجودة في الاختيار إلى النهاية (لتجنب فقدان بيانات)
+            remaining = [col for col in df.columns if col not in ordered_columns]
+            final_columns = ordered_columns + remaining
+            df_display = df[final_columns].copy()
+
+            # عرض الجدول
+            st.dataframe(df_display, use_container_width=True)
+
+            # تطبيق تنسيق CSS على الجدول
             st.markdown(f"""
             <style>
-            div[data-testid="stDataFrame"] div[data-testid="stTable"] {{ font-size: {font_scale}% !important; }}
-            div[data-testid="stDataFrame"] table {{ background-color: {bg_color} !important; }}
-            </style>""", unsafe_allow_html=True)
+            div[data-testid="stDataFrame"] div[data-testid="stTable"] {{
+                font-size: {font_scale}% !important;
+            }}
+            div[data-testid="stDataFrame"] table {{
+                background-color: {bg_color} !important;
+            }}
+            </style>
+            """, unsafe_allow_html=True)
+
+            # أزرار التصدير (نصدر النسخة الأصلية بدون عمود المرفق ليسهل القراءة)
             export_df = df.drop(columns=['مرفق'], errors='ignore')
+            # نعيد ترتيب export_df بنفس ترتيب العرض (بدون مرفق)
+            export_ordered = [col for col in ordered_columns if col in export_df.columns]
+            export_df = export_df[export_ordered]
             export_buttons(export_df, "حركات", "تقرير الحركات")
         else:
-            st.info("لا توجد حركات")
+            st.info("لا توجد حركات مطابقة للفلترة")
+
     with tab2:
         st.subheader("تقرير الأرصدة")
-        items = conn.execute("SELECT i.item_code, i.name, i.current_balance, u.unit_symbol FROM items i LEFT JOIN units u ON i.unit_id=u.id WHERE i.is_active=1").fetchall()
+        items = conn.execute("""
+            SELECT i.item_code, i.name, i.current_balance, u.unit_symbol
+            FROM items i LEFT JOIN units u ON i.unit_id = u.id
+            WHERE i.is_active = 1
+        """).fetchall()
         if items:
-            df = pd.DataFrame(items, columns=['كود','الصنف','الرصيد','الوحدة'])
+            df = pd.DataFrame(items, columns=['كود', 'الصنف', 'الرصيد', 'الوحدة'])
             st.dataframe(df, use_container_width=True)
             export_buttons(df, "ارصدة", "تقرير الأرصدة")
         else:
             st.info("لا توجد أصناف نشطة")
+
     conn.close()
 
 elif choice == "🗑️ إدارة الحركات (حذف)":
