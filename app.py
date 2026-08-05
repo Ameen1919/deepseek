@@ -16,7 +16,7 @@ from bidi.algorithm import get_display
 import base64
 
 # ======================== إعدادات الصفحة ========================
-st.set_page_config(page_title="مخزن سى خرة", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="مخزن النظافة", layout="wide", initial_sidebar_state="expanded")
 
 # ======================== إدارة الثيم والخط ========================
 if 'font_size' not in st.session_state:
@@ -347,7 +347,7 @@ if not st.session_state.logged_in:
     st.stop()
 
 # -------------------- الشريط الجانبي --------------------
-st.sidebar.title("🧹 مخزن النظافة")
+st.sidebar.title("🧹 مخزن سى خرة")
 if st.session_state.logo_path and os.path.exists(st.session_state.logo_path):
     st.sidebar.image(st.session_state.logo_path, width=150)
 st.sidebar.write(f"مرحباً {st.session_state.user['full_name']} ({st.session_state.user['role']})")
