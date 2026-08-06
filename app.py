@@ -555,12 +555,21 @@ elif choice == "📦 إدارة الأصناف":
     if not check_perm(): st.error("غير مصرح"); st.stop()
     st.header("إدارة الأصناف")
     conn = get_db()
-    tab1, tab2 = st.tabs(["إضافة صنف","تعديل/حذف صنف"])
+    tab1, tab2, tab3 = st.tabs(["إضافة صنف","تعديل/حذف صنف","📥 استيراد من Excel"])
     units = conn.execute("SELECT id, unit_name, unit_symbol FROM units").fetchall()
     suppliers = conn.execute("SELECT id, supplier_name FROM suppliers").fetchall()
+
+    # --------- تبويب الإضافة اليدوية ---------
     with tab1:
         with st.form("add_item"):
             name = st.text_input("اسم الصنف *")
+            name_exists = False
+            if name:
+                existing = conn.execute("SELECT id FROM items WHERE name=? AND is_active=1", (name.strip(),)).fetchone()
+                if existing:
+                    name_exists = True
+                    st.warning("⚠️ هذا الاسم موجود بالفعل، لا يمكن تكراره.")
+
             unit = st.selectbox("الوحدة", [f"{u['unit_name']} ({u['unit_symbol']})" for u in units])
             supplier = st.selectbox("المورد الأساسي (اختياري)", ["-"] + [s['supplier_name'] for s in suppliers])
             min_q = st.number_input("الحد الأدنى",0.0,10000.0,10.0)
@@ -568,9 +577,12 @@ elif choice == "📦 إدارة الأصناف":
             init_bal = st.number_input("الرصيد الافتتاحي",0.0,10000.0,0.0)
             shelf_life = st.number_input("مدة الصلاحية (أيام)",0,3650,365)
             notes = st.text_area("ملاحظات")
+
             if st.form_submit_button("حفظ"):
-                if not name:
+                if not name or name.strip() == "":
                     st.error("الرجاء إدخال اسم الصنف")
+                elif name_exists:
+                    st.error("لا يمكن الحفظ لأن الاسم موجود مسبقاً")
                 else:
                     unit_id = [u['id'] for u in units if f"{u['unit_name']} ({u['unit_symbol']})"==unit][0]
                     supp_id = None if supplier=="-" else [s['id'] for s in suppliers if s['supplier_name']==supplier][0]
@@ -583,6 +595,8 @@ elif choice == "📦 إدارة الأصناف":
                         st.rerun()
                     except sqlite3.IntegrityError:
                         st.error("اسم الصنف موجود مسبقاً!")
+
+    # --------- تبويب التعديل/الحذف ---------
     with tab2:
         items = conn.execute("SELECT id, item_code, name, current_balance, unit_id, min_qty, max_qty, is_active FROM items").fetchall()
         if items:
@@ -644,6 +658,98 @@ elif choice == "📦 إدارة الأصناف":
                             st.info("يرجى تأكيد الحذف أعلاه")
         else:
             st.info("لا توجد أصناف")
+
+    # --------- تبويب استيراد Excel ---------
+    with tab3:
+        st.subheader("استيراد الأصناف من ملف Excel أو CSV")
+        st.info("💡 الملف يجب أن يحتوي على عمود 'اسم الصنف' (أو ما يشابهه). الأعمدة الأخرى اختيارية.")
+        uploaded_file = st.file_uploader("اختر ملف Excel أو CSV", type=["xlsx", "csv"], key="excel_upload")
+        if uploaded_file:
+            try:
+                if uploaded_file.name.endswith('.csv'):
+                    df_excel = pd.read_csv(uploaded_file)
+                else:
+                    df_excel = pd.read_excel(uploaded_file)
+                st.write("👀 معاينة البيانات المرفوعة:")
+                st.dataframe(df_excel.head())
+
+                # محاولة اكتشاف الأعمدة
+                col_map = {
+                    'اسم الصنف': ['اسم الصنف', 'الصنف', 'name', 'item'],
+                    'الوحدة': ['الوحدة', 'وحدة', 'unit'],
+                    'الحد الأدنى': ['الحد الأدنى', 'حد أدنى', 'min'],
+                    'الحد الأقصى': ['الحد الأقصى', 'حد أقصى', 'max'],
+                    'الرصيد': ['الرصيد', 'الرصيد الافتتاحي', 'balance', 'current'],
+                    'صلاحية': ['صلاحية', 'مدة الصلاحية', 'shelf_life'],
+                    'ملاحظات': ['ملاحظات', 'notes']
+                }
+                def find_col(col_list, df_cols):
+                    for c in col_list:
+                        if c in df_cols:
+                            return c
+                    return None
+
+                name_col = find_col(col_map['اسم الصنف'], df_excel.columns)
+                unit_col = find_col(col_map['الوحدة'], df_excel.columns)
+                min_col = find_col(col_map['الحد الأدنى'], df_excel.columns)
+                max_col = find_col(col_map['الحد الأقصى'], df_excel.columns)
+                bal_col = find_col(col_map['الرصيد'], df_excel.columns)
+                shelf_col = find_col(col_map['صلاحية'], df_excel.columns)
+                notes_col = find_col(col_map['ملاحظات'], df_excel.columns)
+
+                if name_col is None:
+                    st.error("❌ لم يتم العثور على عمود 'اسم الصنف' في الملف.")
+                else:
+                    if st.button("بدء الاستيراد", key="start_import"):
+                        units_list = conn.execute("SELECT id, unit_name, unit_symbol FROM units").fetchall()
+                        unit_dict = {u['unit_name']: u['id'] for u in units_list}
+                        unit_dict.update({u['unit_symbol']: u['id'] for u in units_list})
+                        default_unit_id = units_list[0]['id'] if units_list else 1
+
+                        imported = 0
+                        skipped = 0
+                        errors = []
+                        for idx, row in df_excel.iterrows():
+                            try:
+                                item_name = str(row[name_col]).strip()
+                                if not item_name:
+                                    continue
+                                # تحقق مسبق من الوجود (حتى نتجنب IntegrityError)
+                                exists = conn.execute("SELECT id FROM items WHERE name=? AND is_active=1", (item_name,)).fetchone()
+                                if exists:
+                                    skipped += 1
+                                    continue
+
+                                unit_id = default_unit_id
+                                if unit_col and pd.notnull(row[unit_col]):
+                                    unit_val = str(row[unit_col]).strip()
+                                    if unit_val in unit_dict:
+                                        unit_id = unit_dict[unit_val]
+
+                                min_qty = float(row[min_col]) if min_col and pd.notnull(row[min_col]) else 10.0
+                                max_qty = float(row[max_col]) if max_col and pd.notnull(row[max_col]) else 100.0
+                                current_balance = float(row[bal_col]) if bal_col and pd.notnull(row[bal_col]) else 0.0
+                                shelf_life = int(row[shelf_col]) if shelf_col and pd.notnull(row[shelf_col]) else 365
+                                notes = str(row[notes_col]) if notes_col and pd.notnull(row[notes_col]) else ""
+
+                                code = f"ITM-{datetime.now().strftime('%Y%m%d%H%M%S')}-{imported+skipped+1}"
+                                conn.execute("INSERT INTO items (item_code, name, unit_id, min_qty, max_qty, current_balance, shelf_life_days, notes, created_date, last_updated) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                                             (code, item_name, unit_id, min_qty, max_qty, current_balance, shelf_life, notes, date.today().isoformat(), date.today().isoformat()))
+                                conn.commit()
+                                imported += 1
+                            except sqlite3.IntegrityError:
+                                skipped += 1
+                            except Exception as e:
+                                errors.append(f"صف {idx+2}: {str(e)}")
+
+                        if imported > 0:
+                            st.success(f"✅ تم استيراد {imported} صنف بنجاح.")
+                        if skipped > 0:
+                            st.info(f"ℹ️ تم تخطي {skipped} صنف لأن أسمائها موجودة مسبقاً.")
+                        if errors:
+                            st.warning("بعض الأخطاء: " + "; ".join(errors[:5]))
+            except Exception as e:
+                st.error(f"❌ فشل قراءة الملف: {str(e)}")
     conn.close()
 
 elif choice == "📏 الوحدات":
@@ -1044,7 +1150,6 @@ elif choice == "💾 النسخ الاحتياطي":
             if ok: st.success(msg); st.rerun()
             else: st.error(msg)
 
-    # لا نظهر زر المزامنة إلا إذا تم تكوين Google Drive
     if st.secrets.get("google_drive"):
         st.divider()
         st.subheader("☁️ مزامنة مع Google Drive")
