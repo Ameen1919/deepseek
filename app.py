@@ -597,9 +597,13 @@ elif choice == "📦 إدارة الأصناف":
                         st.error("اسم الصنف موجود مسبقاً!")
 
     # --------- تبويب التعديل/الحذف ---------
+        # --------- تبويب التعديل/الحذف ---------
     with tab2:
         items = conn.execute("SELECT id, item_code, name, current_balance, unit_id, min_qty, max_qty, is_active FROM items").fetchall()
         if items:
+            # إعداد قاموس الوحدات للاستخدام السهل
+            unit_dict = {f"{u['unit_name']} ({u['unit_symbol']})": u['id'] for u in units}
+            
             item_names = [f"{it['name']} (كود: {it['item_code']})" for it in items]
             selected_item_str = st.selectbox("اختر الصنف", item_names)
             selected_id = None
@@ -610,9 +614,13 @@ elif choice == "📦 إدارة الأصناف":
             if selected_data:
                 st.subheader("تعديل البيانات")
                 new_name = st.text_input("الاسم", value=selected_data['name'])
+                
+                # إنشاء قائمة خيارات الوحدات واختيار الوحدة الحالية
                 unit_options = [f"{u['unit_name']} ({u['unit_symbol']})" for u in units]
-                current_unit_idx = [i for i,u in enumerate(units) if u['id']==selected_data['unit_id']][0]
+                current_unit_text = next((f"{u['unit_name']} ({u['unit_symbol']})" for u in units if u['id'] == selected_data['unit_id']), unit_options[0])
+                current_unit_idx = unit_options.index(current_unit_text)
                 new_unit = st.selectbox("الوحدة", unit_options, index=current_unit_idx)
+                
                 new_min = st.number_input("الحد الأدنى",0.0,10000.0,float(selected_data['min_qty']))
                 new_max = st.number_input("الحد الأقصى",0.0,10000.0,float(selected_data['max_qty']))
                 active = st.checkbox("نشط", value=bool(selected_data['is_active']))
@@ -622,7 +630,8 @@ elif choice == "📦 إدارة الأصناف":
                         if new_name.strip() == "":
                             st.error("الاسم لا يمكن أن يكون فارغاً")
                         else:
-                            unit_id = units[[u for u in units if f"{u['unit_name']} ({u['unit_symbol']})"==new_unit][0]]['id']
+                            # استخدام القاموس للحصول على unit_id
+                            unit_id = unit_dict[new_unit]
                             try:
                                 conn.execute("UPDATE items SET name=?, unit_id=?, min_qty=?, max_qty=?, is_active=?, last_updated=? WHERE id=?",
                                              (new_name.strip(), unit_id, new_min, new_max, int(active), date.today().isoformat(), selected_id))
@@ -638,27 +647,7 @@ elif choice == "📦 إدارة الأصناف":
                         st.success("تم تعطيل الصنف")
                         st.rerun()
 
-                st.divider()
-                st.subheader("🗑️ حذف نهائي")
-                st.warning("الحذف النهائي لا يمكن التراجع عنه!")
-                if st.button("حذف الصنف نهائياً", key="perm_delete"):
-                    trans_count = conn.execute("SELECT COUNT(*) FROM transactions WHERE item_id=?", (selected_id,)).fetchone()[0]
-                    if trans_count > 0:
-                        st.error(f"لا يمكن حذف هذا الصنف نهائياً لوجود {trans_count} حركة مرتبطة به. يمكنك تعطيله بدلاً من ذلك.")
-                    else:
-                        confirm = st.checkbox("أؤكد أنني أرغب في حذف الصنف نهائياً", key="confirm_delete")
-                        if confirm:
-                            conn.execute("DELETE FROM expiry_alerts WHERE item_id=?", (selected_id,))
-                            conn.execute("DELETE FROM inventory_counts WHERE item_id=?", (selected_id,))
-                            conn.execute("DELETE FROM items WHERE id=?", (selected_id,))
-                            conn.commit()
-                            st.success("تم حذف الصنف نهائياً")
-                            st.rerun()
-                        else:
-                            st.info("يرجى تأكيد الحذف أعلاه")
-        else:
-            st.info("لا توجد أصناف")
-
+                
     # --------- تبويب استيراد Excel ---------
     with tab3:
         st.subheader("استيراد الأصناف من ملف Excel أو CSV")
