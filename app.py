@@ -555,190 +555,192 @@ elif choice == "📦 إدارة الأصناف":
     if not check_perm(): st.error("غير مصرح"); st.stop()
     st.header("إدارة الأصناف")
     conn = get_db()
-    tab1, tab2, tab3 = st.tabs(["إضافة صنف","تعديل/حذف صنف","📥 استيراد من Excel"])
+
     units = conn.execute("SELECT id, unit_name, unit_symbol FROM units").fetchall()
-    suppliers = conn.execute("SELECT id, supplier_name FROM suppliers").fetchall()
+    unit_options = [f"{u['unit_name']} ({u['unit_symbol']})" for u in units]
+    unit_dict = {opt: u['id'] for opt, u in zip(unit_options, units)}
+    unit_id_to_text = {u['id']: f"{u['unit_name']} ({u['unit_symbol']})" for u in units}
 
-    # --------- تبويب الإضافة اليدوية ---------
-    with tab1:
-        with st.form("add_item"):
-            name = st.text_input("اسم الصنف *")
-            name_exists = False
-            if name:
-                existing = conn.execute("SELECT id FROM items WHERE name=? AND is_active=1", (name.strip(),)).fetchone()
-                if existing:
-                    name_exists = True
-                    st.warning("⚠️ هذا الاسم موجود بالفعل، لا يمكن تكراره.")
+    show_inactive = st.checkbox("إظهار الأصناف غير النشطة", value=False)
+    condition = "" if show_inactive else "WHERE is_active = 1"
 
-            unit = st.selectbox("الوحدة", [f"{u['unit_name']} ({u['unit_symbol']})" for u in units])
-            supplier = st.selectbox("المورد الأساسي (اختياري)", ["-"] + [s['supplier_name'] for s in suppliers])
-            min_q = st.number_input("الحد الأدنى",0.0,10000.0,10.0)
-            max_q = st.number_input("الحد الأقصى",0.0,10000.0,100.0)
-            init_bal = st.number_input("الرصيد الافتتاحي",0.0,10000.0,0.0)
-            shelf_life = st.number_input("مدة الصلاحية (أيام)",0,3650,365)
-            notes = st.text_area("ملاحظات")
+    items = conn.execute(f"SELECT id, item_code, name, unit_id, current_balance, min_qty, max_qty, is_active, notes FROM items {condition} ORDER BY name").fetchall()
 
-            if st.form_submit_button("حفظ"):
-                if not name or name.strip() == "":
-                    st.error("الرجاء إدخال اسم الصنف")
-                elif name_exists:
-                    st.error("لا يمكن الحفظ لأن الاسم موجود مسبقاً")
-                else:
-                    unit_id = [u['id'] for u in units if f"{u['unit_name']} ({u['unit_symbol']})"==unit][0]
-                    supp_id = None if supplier=="-" else [s['id'] for s in suppliers if s['supplier_name']==supplier][0]
-                    code = f"ITM-{datetime.now().strftime('%Y%m%d%H%M%S')}"
-                    try:
-                        conn.execute("INSERT INTO items (item_code, name, unit_id, min_qty, max_qty, current_balance, primary_supplier_id, shelf_life_days, notes, created_date, last_updated) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                                     (code, name.strip(), unit_id, min_q, max_q, init_bal, supp_id, shelf_life, notes, date.today().isoformat(), date.today().isoformat()))
-                        conn.commit()
-                        st.success("تم الحفظ بنجاح")
-                        st.rerun()
-                    except sqlite3.IntegrityError:
-                        st.error("اسم الصنف موجود مسبقاً!")
+    data = []
+    for it in items:
+        data.append({
+            "id": it["id"],
+            "item_code": it["item_code"],
+            "name": it["name"],
+            "unit_text": unit_id_to_text.get(it["unit_id"], unit_options[0]),
+            "current_balance": it["current_balance"],
+            "min_qty": it["min_qty"],
+            "max_qty": it["max_qty"],
+            "is_active": bool(it["is_active"]),
+            "notes": it["notes"],
+            "delete": False
+        })
 
-    # --------- تبويب التعديل/الحذف ---------
-        # --------- تبويب التعديل/الحذف ---------
-    with tab2:
-        items = conn.execute("SELECT id, item_code, name, current_balance, unit_id, min_qty, max_qty, is_active FROM items").fetchall()
-        if items:
-            # إعداد قاموس الوحدات للاستخدام السهل
-            unit_dict = {f"{u['unit_name']} ({u['unit_symbol']})": u['id'] for u in units}
-            
-            item_names = [f"{it['name']} (كود: {it['item_code']})" for it in items]
-            selected_item_str = st.selectbox("اختر الصنف", item_names)
-            selected_id = None
-            selected_data = None
-            for it in items:
-                if f"{it['name']} (كود: {it['item_code']})" == selected_item_str:
-                    selected_id = it['id']; selected_data = it; break
-            if selected_data:
-                st.subheader("تعديل البيانات")
-                new_name = st.text_input("الاسم", value=selected_data['name'])
-                
-                # إنشاء قائمة خيارات الوحدات واختيار الوحدة الحالية
-                unit_options = [f"{u['unit_name']} ({u['unit_symbol']})" for u in units]
-                current_unit_text = next((f"{u['unit_name']} ({u['unit_symbol']})" for u in units if u['id'] == selected_data['unit_id']), unit_options[0])
-                current_unit_idx = unit_options.index(current_unit_text)
-                new_unit = st.selectbox("الوحدة", unit_options, index=current_unit_idx)
-                
-                new_min = st.number_input("الحد الأدنى",0.0,10000.0,float(selected_data['min_qty']))
-                new_max = st.number_input("الحد الأقصى",0.0,10000.0,float(selected_data['max_qty']))
-                active = st.checkbox("نشط", value=bool(selected_data['is_active']))
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("حفظ التعديلات"):
-                        if new_name.strip() == "":
-                            st.error("الاسم لا يمكن أن يكون فارغاً")
-                        else:
-                            # استخدام القاموس للحصول على unit_id
-                            unit_id = unit_dict[new_unit]
-                            try:
-                                conn.execute("UPDATE items SET name=?, unit_id=?, min_qty=?, max_qty=?, is_active=?, last_updated=? WHERE id=?",
-                                             (new_name.strip(), unit_id, new_min, new_max, int(active), date.today().isoformat(), selected_id))
-                                conn.commit()
-                                st.success("تم الحفظ بنجاح")
-                                st.rerun()
-                            except sqlite3.IntegrityError:
-                                st.error("اسم الصنف موجود مسبقاً!")
-                with col2:
-                    if st.button("حذف (تعطيل)"):
-                        conn.execute("UPDATE items SET is_active=0, last_updated=? WHERE id=?", (date.today().isoformat(), selected_id))
-                        conn.commit()
-                        st.success("تم تعطيل الصنف")
-                        st.rerun()
+    df = pd.DataFrame(data)
 
-                
-    # --------- تبويب استيراد Excel ---------
-    with tab3:
-        st.subheader("استيراد الأصناف من ملف Excel أو CSV")
-        st.info("💡 الملف يجب أن يحتوي على عمود 'اسم الصنف' (أو ما يشابهه). الأعمدة الأخرى اختيارية.")
-        uploaded_file = st.file_uploader("اختر ملف Excel أو CSV", type=["xlsx", "csv"], key="excel_upload")
-        if uploaded_file:
-            try:
-                if uploaded_file.name.endswith('.csv'):
-                    df_excel = pd.read_csv(uploaded_file)
-                else:
-                    df_excel = pd.read_excel(uploaded_file)
-                st.write("👀 معاينة البيانات المرفوعة:")
-                st.dataframe(df_excel.head())
+    edited_df = st.data_editor(
+        df,
+        column_config={
+            "id": st.column_config.NumberColumn("المعرف", disabled=True),
+            "item_code": st.column_config.TextColumn("الكود", disabled=True),
+            "name": st.column_config.TextColumn("اسم الصنف", required=True),
+            "unit_text": st.column_config.SelectboxColumn("الوحدة", options=unit_options),
+            "current_balance": st.column_config.NumberColumn("الرصيد الحالي", min_value=0.0, step=0.1),
+            "min_qty": st.column_config.NumberColumn("الحد الأدنى", min_value=0.0, step=0.1),
+            "max_qty": st.column_config.NumberColumn("الحد الأقصى", min_value=0.0, step=0.1),
+            "is_active": st.column_config.CheckboxColumn("نشط"),
+            "notes": st.column_config.TextColumn("ملاحظات"),
+            "delete": st.column_config.CheckboxColumn("حذف")
+        },
+        disabled=["id", "item_code"],
+        hide_index=True,
+        num_rows="dynamic",
+        key="items_editor"
+    )
 
-                # محاولة اكتشاف الأعمدة
-                col_map = {
-                    'اسم الصنف': ['اسم الصنف', 'الصنف', 'name', 'item'],
-                    'الوحدة': ['الوحدة', 'وحدة', 'unit'],
-                    'الحد الأدنى': ['الحد الأدنى', 'حد أدنى', 'min'],
-                    'الحد الأقصى': ['الحد الأقصى', 'حد أقصى', 'max'],
-                    'الرصيد': ['الرصيد', 'الرصيد الافتتاحي', 'balance', 'current'],
-                    'صلاحية': ['صلاحية', 'مدة الصلاحية', 'shelf_life'],
-                    'ملاحظات': ['ملاحظات', 'notes']
-                }
-                def find_col(col_list, df_cols):
-                    for c in col_list:
-                        if c in df_cols:
-                            return c
-                    return None
+    col_btn1, col_btn2, col_btn3 = st.columns(3)
+    with col_btn1:
+        if st.button("💾 حفظ جميع التعديلات", type="primary"):
+            with conn:
+                ids_to_delete = edited_df[edited_df["delete"] == True]["id"].dropna().astype(int).tolist()
+                for item_id in ids_to_delete:
+                    trans_count = conn.execute("SELECT COUNT(*) FROM transactions WHERE item_id=?", (item_id,)).fetchone()[0]
+                    if trans_count > 0:
+                        st.warning(f"الصنف رقم {item_id} لا يمكن حذفه لوجود حركات مرتبطة.")
+                    else:
+                        conn.execute("DELETE FROM expiry_alerts WHERE item_id=?", (item_id,))
+                        conn.execute("DELETE FROM inventory_counts WHERE item_id=?", (item_id,))
+                        conn.execute("DELETE FROM items WHERE id=?", (item_id,))
 
-                name_col = find_col(col_map['اسم الصنف'], df_excel.columns)
-                unit_col = find_col(col_map['الوحدة'], df_excel.columns)
-                min_col = find_col(col_map['الحد الأدنى'], df_excel.columns)
-                max_col = find_col(col_map['الحد الأقصى'], df_excel.columns)
-                bal_col = find_col(col_map['الرصيد'], df_excel.columns)
-                shelf_col = find_col(col_map['صلاحية'], df_excel.columns)
-                notes_col = find_col(col_map['ملاحظات'], df_excel.columns)
+                for _, row in edited_df.iterrows():
+                    if pd.isna(row["id"]):
+                        if pd.isna(row["name"]) or str(row["name"]).strip() == "":
+                            continue
+                        exists = conn.execute("SELECT id FROM items WHERE name=? AND is_active=1", (row["name"].strip(),)).fetchone()
+                        if exists:
+                            st.warning(f"الصنف '{row['name']}' موجود مسبقاً، تم تخطيه.")
+                            continue
+                        unit_id = unit_dict.get(row["unit_text"], units[0]["id"])
+                        code = f"ITM-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                        conn.execute("INSERT INTO items (item_code, name, unit_id, min_qty, max_qty, current_balance, is_active, notes, created_date, last_updated) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                                     (code, row["name"].strip(), unit_id, row["min_qty"], row["max_qty"],
+                                      row["current_balance"], int(row["is_active"]), row.get("notes", ""),
+                                      date.today().isoformat(), date.today().isoformat()))
+                    else:
+                        item_id = int(row["id"])
+                        unit_id = unit_dict.get(row["unit_text"], units[0]["id"])
+                        new_name = row["name"].strip() if pd.notna(row["name"]) else ""
+                        if new_name == "":
+                            continue
+                        duplicate = conn.execute("SELECT id FROM items WHERE name=? AND id!=? AND is_active=1", (new_name, item_id)).fetchone()
+                        if duplicate:
+                            st.warning(f"الاسم '{new_name}' موجود بالفعل لصنف آخر، لم يتم تحديث الصنف {item_id}.")
+                            continue
+                        conn.execute("""UPDATE items SET name=?, unit_id=?, min_qty=?, max_qty=?, current_balance=?, is_active=?, notes=?, last_updated=?
+                                      WHERE id=?""",
+                                     (new_name, unit_id, row["min_qty"], row["max_qty"],
+                                      row["current_balance"], int(row["is_active"]), row.get("notes", ""),
+                                      date.today().isoformat(), item_id))
 
-                if name_col is None:
-                    st.error("❌ لم يتم العثور على عمود 'اسم الصنف' في الملف.")
-                else:
-                    if st.button("بدء الاستيراد", key="start_import"):
-                        units_list = conn.execute("SELECT id, unit_name, unit_symbol FROM units").fetchall()
-                        unit_dict = {u['unit_name']: u['id'] for u in units_list}
-                        unit_dict.update({u['unit_symbol']: u['id'] for u in units_list})
-                        default_unit_id = units_list[0]['id'] if units_list else 1
+            conn.commit()
+            st.success("تم حفظ التعديلات بنجاح")
+            st.rerun()
 
-                        imported = 0
-                        skipped = 0
-                        errors = []
-                        for idx, row in df_excel.iterrows():
-                            try:
-                                item_name = str(row[name_col]).strip()
-                                if not item_name:
-                                    continue
-                                # تحقق مسبق من الوجود (حتى نتجنب IntegrityError)
-                                exists = conn.execute("SELECT id FROM items WHERE name=? AND is_active=1", (item_name,)).fetchone()
-                                if exists:
+    with col_btn2:
+        if st.button("🔄 إعادة تحميل البيانات"):
+            st.rerun()
+
+    with col_btn3:
+        with st.expander("📥 استيراد من Excel"):
+            uploaded_file = st.file_uploader("اختر ملف Excel أو CSV", type=["xlsx", "csv"], key="excel_upload")
+            if uploaded_file:
+                try:
+                    if uploaded_file.name.endswith('.csv'):
+                        df_excel = pd.read_csv(uploaded_file)
+                    else:
+                        df_excel = pd.read_excel(uploaded_file)
+                    st.dataframe(df_excel.head())
+
+                    col_map = {
+                        'اسم الصنف': ['اسم الصنف', 'الصنف', 'name', 'item'],
+                        'الوحدة': ['الوحدة', 'وحدة', 'unit'],
+                        'الحد الأدنى': ['الحد الأدنى', 'حد أدنى', 'min'],
+                        'الحد الأقصى': ['الحد الأقصى', 'حد أقصى', 'max'],
+                        'الرصيد': ['الرصيد', 'الرصيد الافتتاحي', 'balance', 'current'],
+                        'صلاحية': ['صلاحية', 'مدة الصلاحية', 'shelf_life'],
+                        'ملاحظات': ['ملاحظات', 'notes']
+                    }
+                    def find_col(col_list, df_cols):
+                        for c in col_list:
+                            if c in df_cols:
+                                return c
+                        return None
+
+                    name_col = find_col(col_map['اسم الصنف'], df_excel.columns)
+                    unit_col = find_col(col_map['الوحدة'], df_excel.columns)
+                    min_col = find_col(col_map['الحد الأدنى'], df_excel.columns)
+                    max_col = find_col(col_map['الحد الأقصى'], df_excel.columns)
+                    bal_col = find_col(col_map['الرصيد'], df_excel.columns)
+                    shelf_col = find_col(col_map['صلاحية'], df_excel.columns)
+                    notes_col = find_col(col_map['ملاحظات'], df_excel.columns)
+
+                    if name_col is None:
+                        st.error("❌ لم يتم العثور على عمود 'اسم الصنف' في الملف.")
+                    else:
+                        if st.button("بدء الاستيراد", key="start_import"):
+                            units_list = conn.execute("SELECT id, unit_name, unit_symbol FROM units").fetchall()
+                            unit_dict_excel = {u['unit_name']: u['id'] for u in units_list}
+                            unit_dict_excel.update({u['unit_symbol']: u['id'] for u in units_list})
+                            default_unit_id = units_list[0]['id'] if units_list else 1
+
+                            imported = 0
+                            skipped = 0
+                            errors = []
+                            for idx, row in df_excel.iterrows():
+                                try:
+                                    item_name = str(row[name_col]).strip()
+                                    if not item_name:
+                                        continue
+                                    exists = conn.execute("SELECT id FROM items WHERE name=? AND is_active=1", (item_name,)).fetchone()
+                                    if exists:
+                                        skipped += 1
+                                        continue
+
+                                    unit_id = default_unit_id
+                                    if unit_col and pd.notnull(row[unit_col]):
+                                        unit_val = str(row[unit_col]).strip()
+                                        if unit_val in unit_dict_excel:
+                                            unit_id = unit_dict_excel[unit_val]
+
+                                    min_qty = float(row[min_col]) if min_col and pd.notnull(row[min_col]) else 10.0
+                                    max_qty = float(row[max_col]) if max_col and pd.notnull(row[max_col]) else 100.0
+                                    current_balance = float(row[bal_col]) if bal_col and pd.notnull(row[bal_col]) else 0.0
+                                    shelf_life = int(row[shelf_col]) if shelf_col and pd.notnull(row[shelf_col]) else 365
+                                    notes = str(row[notes_col]) if notes_col and pd.notnull(row[notes_col]) else ""
+
+                                    code = f"ITM-{datetime.now().strftime('%Y%m%d%H%M%S')}-{imported+skipped+1}"
+                                    conn.execute("INSERT INTO items (item_code, name, unit_id, min_qty, max_qty, current_balance, shelf_life_days, notes, created_date, last_updated) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                                                 (code, item_name, unit_id, min_qty, max_qty, current_balance, shelf_life, notes, date.today().isoformat(), date.today().isoformat()))
+                                    conn.commit()
+                                    imported += 1
+                                except sqlite3.IntegrityError:
                                     skipped += 1
-                                    continue
+                                except Exception as e:
+                                    errors.append(f"صف {idx+2}: {str(e)}")
 
-                                unit_id = default_unit_id
-                                if unit_col and pd.notnull(row[unit_col]):
-                                    unit_val = str(row[unit_col]).strip()
-                                    if unit_val in unit_dict:
-                                        unit_id = unit_dict[unit_val]
-
-                                min_qty = float(row[min_col]) if min_col and pd.notnull(row[min_col]) else 10.0
-                                max_qty = float(row[max_col]) if max_col and pd.notnull(row[max_col]) else 100.0
-                                current_balance = float(row[bal_col]) if bal_col and pd.notnull(row[bal_col]) else 0.0
-                                shelf_life = int(row[shelf_col]) if shelf_col and pd.notnull(row[shelf_col]) else 365
-                                notes = str(row[notes_col]) if notes_col and pd.notnull(row[notes_col]) else ""
-
-                                code = f"ITM-{datetime.now().strftime('%Y%m%d%H%M%S')}-{imported+skipped+1}"
-                                conn.execute("INSERT INTO items (item_code, name, unit_id, min_qty, max_qty, current_balance, shelf_life_days, notes, created_date, last_updated) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                                             (code, item_name, unit_id, min_qty, max_qty, current_balance, shelf_life, notes, date.today().isoformat(), date.today().isoformat()))
-                                conn.commit()
-                                imported += 1
-                            except sqlite3.IntegrityError:
-                                skipped += 1
-                            except Exception as e:
-                                errors.append(f"صف {idx+2}: {str(e)}")
-
-                        if imported > 0:
-                            st.success(f"✅ تم استيراد {imported} صنف بنجاح.")
-                        if skipped > 0:
-                            st.info(f"ℹ️ تم تخطي {skipped} صنف لأن أسمائها موجودة مسبقاً.")
-                        if errors:
-                            st.warning("بعض الأخطاء: " + "; ".join(errors[:5]))
-            except Exception as e:
-                st.error(f"❌ فشل قراءة الملف: {str(e)}")
+                            if imported > 0:
+                                st.success(f"✅ تم استيراد {imported} صنف بنجاح.")
+                            if skipped > 0:
+                                st.info(f"ℹ️ تم تخطي {skipped} صنف لأن أسمائها موجودة مسبقاً.")
+                            if errors:
+                                st.warning("بعض الأخطاء: " + "; ".join(errors[:5]))
+                except Exception as e:
+                    st.error(f"❌ فشل قراءة الملف: {str(e)}")
     conn.close()
 
 elif choice == "📏 الوحدات":
@@ -902,8 +904,8 @@ elif choice == "📤 الصادر":
             st.subheader("الأصناف في الإذن الحالي")
             df_current = pd.DataFrame(st.session_state.outward_items)
             units = conn.execute("SELECT id, unit_symbol FROM units").fetchall()
-            unit_dict = {u['id']: u['unit_symbol'] for u in units}
-            df_current['الوحدة'] = df_current['unit_id'].map(unit_dict)
+            unit_dict_out = {u['id']: u['unit_symbol'] for u in units}
+            df_current['الوحدة'] = df_current['unit_id'].map(unit_dict_out)
             df_display = df_current[['item_name', 'qty', 'الوحدة']].copy()
             df_display.columns = ['الصنف', 'الكمية', 'الوحدة']
             st.dataframe(df_display, use_container_width=True)
@@ -956,7 +958,7 @@ elif choice == "📤 الصادر":
 
                         pdf_items = []
                         for item_entry in st.session_state.outward_items:
-                            unit_symbol = unit_dict.get(item_entry['unit_id'], '')
+                            unit_symbol = unit_dict_out.get(item_entry['unit_id'], '')
                             pdf_items.append([item_entry['item_name'], str(item_entry['qty']), unit_symbol])
                         font_path = get_arabic_font()
                         pdf = FPDF()
