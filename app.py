@@ -447,7 +447,7 @@ if not st.session_state.logged_in:
     st.stop()
 
 # -------------------- الشريط الجانبي --------------------
-st.sidebar.title("🧹 مخزن النظافة")
+st.sidebar.title("🧹 مستودع سى خرة")
 if st.session_state.logo_path and os.path.exists(st.session_state.logo_path):
     st.sidebar.image(st.session_state.logo_path, width=150)
 st.sidebar.write(f"مرحباً {st.session_state.user['full_name']} ({st.session_state.user['role']})")
