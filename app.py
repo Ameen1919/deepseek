@@ -26,7 +26,7 @@ if 'theme_color' not in st.session_state:
 if 'logo_path' not in st.session_state:
     st.session_state.logo_path = None
 if 'store_name' not in st.session_state:
-    st.session_state.store_name = "مخزن النظافة"  # اسم المستودع الافتراضي
+    st.session_state.store_name = "مخزن النظافة"
 
 def apply_theme():
     st.markdown(f"""
@@ -449,7 +449,6 @@ if not st.session_state.logged_in:
     st.stop()
 
 # -------------------- الشريط الجانبي --------------------
-# استخدام اسم المستودع القابل للتغيير
 st.sidebar.title(f"🧹 {st.session_state.store_name}")
 if st.session_state.logo_path and os.path.exists(st.session_state.logo_path):
     st.sidebar.image(st.session_state.logo_path, width=150)
@@ -462,7 +461,6 @@ st.sidebar.subheader("🎨 إعدادات المظهر")
 new_font_size = st.sidebar.slider("حجم الخط (%)", 50, 200, st.session_state.font_size, step=10, key="global_font")
 theme_color = st.sidebar.color_picker("لون البرنامج", st.session_state.theme_color, key="global_theme")
 
-# تغيير اسم المستودع
 st.sidebar.subheader("🏷️ اسم المستودع")
 new_store_name = st.sidebar.text_input("أدخل الاسم الجديد", value=st.session_state.store_name, key="store_name_input")
 if st.sidebar.button("تحديث الاسم", key="update_name"):
@@ -475,7 +473,6 @@ if st.sidebar.button("تحديث الاسم", key="update_name"):
 
 st.sidebar.markdown("---")
 
-# رفع الشعار مع رسالة نجاح
 uploaded_logo = st.sidebar.file_uploader("📷 رفع شعار", type=["png","jpg","jpeg"], key="logo_uploader")
 if uploaded_logo is not None:
     with open(LOGO_FILE, "wb") as f:
@@ -484,7 +481,6 @@ if uploaded_logo is not None:
     st.success("✅ تم رفع الشعار بنجاح")
     st.rerun()
 
-# زر مسح الشعار
 if st.session_state.logo_path and os.path.exists(st.session_state.logo_path):
     if st.sidebar.button("🗑️ مسح الشعار"):
         os.remove(st.session_state.logo_path)
@@ -499,7 +495,6 @@ if new_font_size != st.session_state.font_size or theme_color != st.session_stat
 
 st.sidebar.divider()
 
-# القائمة بدون الصلاحيات
 menu = []
 if check_perm():
     menu = ["📊 لوحة التحكم","📦 إدارة الأصناف","📏 الوحدات","🏨 الفنادق","🏢 الموردين",
@@ -514,8 +509,23 @@ elif has_role('supervisor'):
 
 choice = st.sidebar.radio("القائمة", menu)
 
+# ======================== دوال مساعدة للجداول القابلة للتخصيص ========================
+def apply_table_styling(font_scale, bg_color):
+    return f"""<style>
+        div[data-testid="stDataFrame"] div[data-testid="stTable"] {{ font-size: {font_scale}% !important; }}
+        div[data-testid="stDataFrame"] table {{ background-color: {bg_color} !important; }}
+    </style>"""
+
+def column_selector(label, all_columns, default_order, key):
+    if key not in st.session_state:
+        st.session_state[key] = default_order
+    new_order = st.multiselect(label, options=all_columns, default=st.session_state[key], key=key+"_multiselect")
+    if new_order != st.session_state[key]:
+        st.session_state[key] = new_order
+        st.rerun()
+    return st.session_state[key]
+
 # ======================== الصفحات ========================
-# (جميع الصفحات من الرد السابق الكامل، دون تغيير)
 if choice == "📊 لوحة التحكم":
     st.header("لوحة التحكم")
     conn = get_db()
@@ -529,8 +539,16 @@ if choice == "📊 لوحة التحكم":
     low_items = conn.execute("SELECT i.item_code, i.name, i.current_balance, i.min_qty, u.unit_symbol FROM items i LEFT JOIN units u ON i.unit_id=u.id WHERE i.current_balance<=i.min_qty AND i.is_active=1").fetchall()
     if low_items:
         df = pd.DataFrame(low_items, columns=['كود','الصنف','الرصيد','الحد الأدنى','الوحدة'])
-        st.dataframe(df)
-        export_buttons(df, "اصناف_منخفضة", "تقرير الأصناف أقل من الحد الأدنى")
+        with st.expander("🎨 تنسيق جدول التنبيهات"):
+            font_scale = st.slider("حجم الخط (%)", 50,200,100,10, key="dash_font")
+            color_option = st.selectbox("لون الجدول", ["افتراضي","أخضر","أزرق","رمادي","برتقالي"], key="dash_color")
+            color_map = {"افتراضي":"#f0f2f6","أخضر":"#e6ffe6","أزرق":"#e6f0ff","رمادي":"#f5f5f5","برتقالي":"#fff3e6"}
+            bg = color_map.get(color_option,"#f0f2f6")
+            cols = column_selector("اختر الأعمدة ورتبها", list(df.columns), list(df.columns), "dash_cols")
+        df_disp = df[cols]
+        st.dataframe(df_disp, use_container_width=True)
+        st.markdown(apply_table_styling(font_scale, bg), unsafe_allow_html=True)
+        export_buttons(df_disp, "اصناف_منخفضة", "تقرير الأصناف أقل من الحد الأدنى")
     conn.close()
 
 elif choice == "📦 إدارة الأصناف":
@@ -643,7 +661,8 @@ elif choice == "📏 الوحدات":
                 st.rerun()
     units = conn.execute("SELECT * FROM units").fetchall()
     if units:
-        st.dataframe(pd.DataFrame(units, columns=['م','الوحدة','الرمز']))
+        df = pd.DataFrame(units, columns=['م','الوحدة','الرمز'])
+        st.dataframe(df, use_container_width=True)
     conn.close()
 
 elif choice == "🏨 الفنادق":
@@ -728,22 +747,19 @@ elif choice == "📥 الوارد":
             item = st.selectbox("الصنف", [i['name'] for i in items])
             qty = st.number_input("الكمية",0.1,100000.0,1.0)
             batch = st.text_input("رقم التشغيلة")
-            exp_date = st.date_input("تاريخ انتهاء الصلاحية", date.today()+timedelta(days=365))
             invoice_date = st.date_input("تاريخ الفاتورة", value=date.today())
             notes = st.text_input("ملاحظات")
             uploaded_file = st.file_uploader("📎 إرفاق ملف", type=["png","jpg","jpeg","pdf"])
             if st.form_submit_button("تسجيل"):
                 it = [i for i in items if i['name']==item][0]
                 conn.execute("""INSERT INTO transactions (transaction_type,item_id,qty,unit_id,batch_number,expiry_date,transaction_date,notes,created_by)
-                              VALUES (?,?,?,?,?,?,?,?,?)""",
-                             ('وارد',it['id'],qty,it['unit_id'],batch,exp_date.isoformat(),invoice_date.isoformat(),notes,st.session_state.user['full_name']))
+                              VALUES (?,?,?,?,?,NULL,?,?,?)""",
+                             ('وارد',it['id'],qty,it['unit_id'],batch,invoice_date.isoformat(),notes,st.session_state.user['full_name']))
                 trans_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
                 if uploaded_file:
                     att = save_attachment(uploaded_file, trans_id)
                     conn.execute("UPDATE transactions SET attachment=? WHERE id=?", (att, trans_id))
                 conn.execute("UPDATE items SET current_balance=current_balance+?, last_updated=? WHERE id=?",(qty,date.today().isoformat(),it['id']))
-                if exp_date:
-                    conn.execute("INSERT INTO expiry_alerts (item_id,batch_number,expiry_date,qty_remaining) VALUES (?,?,?,?)",(it['id'],batch,exp_date.isoformat(),qty))
                 conn.commit()
                 st.success(f"تم الحفظ بنجاح (تاريخ الفاتورة: {invoice_date.isoformat()})")
                 st.rerun()
@@ -930,12 +946,7 @@ elif choice == "📈 التقارير":
             bg_color = color_map.get(color_option, "#f0f2f6")
 
             all_columns = ['رقم الحركة','التاريخ','الصنف','النوع','الكمية','الوحدة','الفندق','ملاحظات','مرفق']
-            if 'selected_columns_order' not in st.session_state:
-                st.session_state.selected_columns_order = ['رقم الحركة','التاريخ','الصنف','النوع','الكمية','الوحدة','الفندق','ملاحظات','مرفق']
-            new_order = st.multiselect("اختر الأعمدة ورتبها", options=all_columns, default=st.session_state.selected_columns_order, key="columns_order")
-            if new_order != st.session_state.selected_columns_order:
-                st.session_state.selected_columns_order = new_order
-                st.rerun()
+            cols_order = column_selector("اختر الأعمدة ورتبها", all_columns, ['رقم الحركة','التاريخ','الصنف','النوع','الكمية','الوحدة','الفندق','ملاحظات','مرفق'], "trans_cols")
 
         query = """
             SELECT t.id, t.transaction_date, i.name AS item_name, t.transaction_type, t.qty, u.unit_symbol,
@@ -964,26 +975,34 @@ elif choice == "📈 التقارير":
                         return f'<a href="data:application/octet-stream;base64,{b64}" download="{fname}">📎 تحميل</a>'
                 return ""
             df['مرفق'] = df['مرفق'].apply(attachment_link)
-            ordered_columns = [col for col in st.session_state.selected_columns_order if col in df.columns]
-            remaining = [col for col in df.columns if col not in ordered_columns]
-            df_display = df[ordered_columns + remaining]
+            ordered = [c for c in cols_order if c in df.columns]
+            remaining = [c for c in df.columns if c not in ordered]
+            df_display = df[ordered + remaining]
             st.dataframe(df_display, use_container_width=True)
-            st.markdown(f"""<style>
-                div[data-testid="stDataFrame"] div[data-testid="stTable"] {{ font-size: {font_scale}% !important; }}
-                div[data-testid="stDataFrame"] table {{ background-color: {bg_color} !important; }}
-            </style>""", unsafe_allow_html=True)
+            st.markdown(apply_table_styling(font_scale, bg_color), unsafe_allow_html=True)
             export_df = df.drop(columns=['مرفق'], errors='ignore')
-            export_df = export_df[[col for col in ordered_columns if col in export_df.columns]]
+            export_df = export_df[[c for c in ordered if c in export_df.columns]]
             export_buttons(export_df, "حركات", "تقرير الحركات")
         else:
             st.info("لا توجد حركات")
     with tab2:
         st.subheader("تقرير الأرصدة")
+        with st.expander("🎨 تنسيق جدول الأرصدة"):
+            font_scale2 = st.slider("حجم الخط (%)", 50,200,100,10, key="bal_font")
+            color_option2 = st.selectbox("لون الجدول", ["افتراضي","أخضر","أزرق","رمادي","برتقالي"], key="bal_color")
+            color_map2 = {"افتراضي":"#f0f2f6","أخضر":"#e6ffe6","أزرق":"#e6f0ff","رمادي":"#f5f5f5","برتقالي":"#fff3e6"}
+            bg2 = color_map2.get(color_option2,"#f0f2f6")
+            bal_cols = column_selector("اختر الأعمدة ورتبها (للأرصدة)", ['كود','الصنف','الرصيد','الوحدة'], ['كود','الصنف','الرصيد','الوحدة'], "bal_cols")
+
         items = conn.execute("SELECT i.item_code, i.name, i.current_balance, u.unit_symbol FROM items i LEFT JOIN units u ON i.unit_id=u.id WHERE i.is_active=1").fetchall()
         if items:
             df = pd.DataFrame(items, columns=['كود','الصنف','الرصيد','الوحدة'])
-            st.dataframe(df, use_container_width=True)
-            export_buttons(df, "ارصدة", "تقرير الأرصدة")
+            ordered = [c for c in bal_cols if c in df.columns]
+            remaining = [c for c in df.columns if c not in ordered]
+            df_disp = df[ordered + remaining]
+            st.dataframe(df_disp, use_container_width=True)
+            st.markdown(apply_table_styling(font_scale2, bg2), unsafe_allow_html=True)
+            export_buttons(df_disp, "ارصدة", "تقرير الأرصدة")
         else:
             st.info("لا توجد أصناف نشطة")
     conn.close()
@@ -1025,20 +1044,27 @@ elif choice == "💾 النسخ الاحتياطي":
             if ok: st.success(msg); st.rerun()
             else: st.error(msg)
 
-    st.divider()
-    st.subheader("☁️ مزامنة مع Google Drive")
-    if st.button("📤 رفع قاعدة البيانات الآن إلى Drive"):
-        if upload_db_to_drive():
-            st.success("✅ تم رفع قاعدة البيانات بنجاح إلى Google Drive")
-        else:
-            st.error("❌ فشل الرفع. تأكد من إعدادات secrets.")
+    # لا نظهر زر المزامنة إلا إذا تم تكوين Google Drive
+    if st.secrets.get("google_drive"):
+        st.divider()
+        st.subheader("☁️ مزامنة مع Google Drive")
+        if st.button("📤 رفع قاعدة البيانات الآن إلى Drive"):
+            if upload_db_to_drive():
+                st.success("✅ تم رفع قاعدة البيانات بنجاح إلى Google Drive")
+            else:
+                st.error("❌ فشل الرفع. تأكد من إعدادات secrets.")
+    else:
+        st.divider()
+        st.info("ℹ️ للحصول على نسخ احتياطية تلقائية، يمكنك إعداد Google Drive من خلال ملف secrets.")
 
 elif choice == "👥 المستخدمين":
     if not has_role('super_admin'): st.error("غير مصرح"); st.stop()
     st.header("المستخدمين")
     conn = get_db()
     users = conn.execute("SELECT username, role, full_name FROM users").fetchall()
-    st.dataframe(pd.DataFrame(users, columns=['مستخدم','دور','اسم']))
+    if users:
+        df = pd.DataFrame(users, columns=['مستخدم','دور','اسم'])
+        st.dataframe(df, use_container_width=True)
     with st.form("add_user"):
         un = st.text_input("اسم المستخدم")
         pw = st.text_input("كلمة المرور", type="password")
