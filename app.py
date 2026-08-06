@@ -18,13 +18,15 @@ import base64
 # ======================== إعدادات الصفحة ========================
 st.set_page_config(page_title="مخزن النظافة", layout="wide", initial_sidebar_state="expanded")
 
-# ======================== إدارة الثيم والخط ========================
+# ======================== إدارة الحالة العامة ========================
 if 'font_size' not in st.session_state:
     st.session_state.font_size = 100
 if 'theme_color' not in st.session_state:
     st.session_state.theme_color = "#00a86b"
 if 'logo_path' not in st.session_state:
     st.session_state.logo_path = None
+if 'store_name' not in st.session_state:
+    st.session_state.store_name = "مخزن النظافة"  # اسم المستودع الافتراضي
 
 def apply_theme():
     st.markdown(f"""
@@ -274,7 +276,7 @@ def generate_outward_order_number():
         new_num = 1
     return f"OUT-{today_str}-{new_num:04d}"
 
-# ======================== النسخ الاحتياطي ========================
+# ======================== النسخ الاحتياطي والمزامنة ========================
 def load_backup_config():
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE,'r',encoding='utf-8') as f: return json.load(f)
@@ -447,22 +449,48 @@ if not st.session_state.logged_in:
     st.stop()
 
 # -------------------- الشريط الجانبي --------------------
-st.sidebar.title("🧹 مستودع سى خرة")
+# استخدام اسم المستودع القابل للتغيير
+st.sidebar.title(f"🧹 {st.session_state.store_name}")
 if st.session_state.logo_path and os.path.exists(st.session_state.logo_path):
     st.sidebar.image(st.session_state.logo_path, width=150)
 st.sidebar.write(f"مرحباً {st.session_state.user['full_name']} ({st.session_state.user['role']})")
 if st.sidebar.button("تسجيل الخروج"): logout()
 st.sidebar.divider()
 
+# إعدادات المظهر واسم المستودع
 st.sidebar.subheader("🎨 إعدادات المظهر")
 new_font_size = st.sidebar.slider("حجم الخط (%)", 50, 200, st.session_state.font_size, step=10, key="global_font")
 theme_color = st.sidebar.color_picker("لون البرنامج", st.session_state.theme_color, key="global_theme")
+
+# تغيير اسم المستودع
+st.sidebar.subheader("🏷️ اسم المستودع")
+new_store_name = st.sidebar.text_input("أدخل الاسم الجديد", value=st.session_state.store_name, key="store_name_input")
+if st.sidebar.button("تحديث الاسم", key="update_name"):
+    if new_store_name.strip():
+        st.session_state.store_name = new_store_name.strip()
+        st.success("✅ تم تحديث اسم المستودع")
+        st.rerun()
+    else:
+        st.error("الاسم لا يمكن أن يكون فارغاً")
+
 st.sidebar.markdown("---")
-uploaded_logo = st.sidebar.file_uploader("📷 رفع شعار", type=["png","jpg","jpeg"])
-if uploaded_logo:
-    with open(LOGO_FILE, "wb") as f: f.write(uploaded_logo.getbuffer())
+
+# رفع الشعار مع رسالة نجاح
+uploaded_logo = st.sidebar.file_uploader("📷 رفع شعار", type=["png","jpg","jpeg"], key="logo_uploader")
+if uploaded_logo is not None:
+    with open(LOGO_FILE, "wb") as f:
+        f.write(uploaded_logo.getbuffer())
     st.session_state.logo_path = LOGO_FILE
+    st.success("✅ تم رفع الشعار بنجاح")
     st.rerun()
+
+# زر مسح الشعار
+if st.session_state.logo_path and os.path.exists(st.session_state.logo_path):
+    if st.sidebar.button("🗑️ مسح الشعار"):
+        os.remove(st.session_state.logo_path)
+        st.session_state.logo_path = None
+        st.success("تم مسح الشعار")
+        st.rerun()
 
 if new_font_size != st.session_state.font_size or theme_color != st.session_state.theme_color:
     st.session_state.font_size = new_font_size
@@ -471,6 +499,7 @@ if new_font_size != st.session_state.font_size or theme_color != st.session_stat
 
 st.sidebar.divider()
 
+# القائمة بدون الصلاحيات
 menu = []
 if check_perm():
     menu = ["📊 لوحة التحكم","📦 إدارة الأصناف","📏 الوحدات","🏨 الفنادق","🏢 الموردين",
@@ -486,6 +515,7 @@ elif has_role('supervisor'):
 choice = st.sidebar.radio("القائمة", menu)
 
 # ======================== الصفحات ========================
+# (جميع الصفحات من الرد السابق الكامل، دون تغيير)
 if choice == "📊 لوحة التحكم":
     st.header("لوحة التحكم")
     conn = get_db()
