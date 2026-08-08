@@ -836,130 +836,290 @@ elif choice == "🏢 الموردين":
     conn.close()
 
 elif choice == "📥 الوارد":
-    st.header("المشتريات (وارد)")
-    conn = get_db()
-    items = conn.execute("SELECT id,name,unit_id FROM items WHERE is_active=1").fetchall()
-    if items:
-        with st.form("inward"):
-            item = st.selectbox("الصنف", [i['name'] for i in items])
-            qty = st.number_input("الكمية",0.1,100000.0,1.0)
-            batch = st.text_input("رقم التشغيلة")
-            invoice_date = st.date_input("تاريخ الفاتورة", value=date.today())
-            notes = st.text_input("ملاحظات")
-            uploaded_file = st.file_uploader("📎 إرفاق ملف", type=["png","jpg","jpeg","pdf"])
-            if st.form_submit_button("تسجيل"):
-                it = [i for i in items if i['name']==item][0]
-                conn.execute("""INSERT INTO transactions (transaction_type,item_id,qty,unit_id,batch_number,expiry_date,transaction_date,notes,created_by)
-                              VALUES (?,?,?,?,?,NULL,?,?,?)""",
-                             ('وارد',it['id'],qty,it['unit_id'],batch,invoice_date.isoformat(),notes,st.session_state.user['full_name']))
-                trans_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-                if uploaded_file:
-                    att = save_attachment(uploaded_file, trans_id)
-                    conn.execute("UPDATE transactions SET attachment=? WHERE id=?", (att, trans_id))
-                conn.execute("UPDATE items SET current_balance=current_balance+?, last_updated=? WHERE id=?",(qty,date.today().isoformat(),it['id']))
-                conn.commit()
-                st.success(f"تم الحفظ بنجاح (تاريخ الفاتورة: {invoice_date.isoformat()})")
-                st.rerun()
-    conn.close()
+    tab_in1, tab_in2 = st.tabs(["📝 تسجيل مشتريات", "📋 سجل المشتريات"])
+    
+    with tab_in1:
+        st.subheader("تسجيل مشتريات جديدة")
+        conn = get_db()
+        items = conn.execute("SELECT id,name,unit_id FROM items WHERE is_active=1").fetchall()
+        if items:
+            with st.form("inward"):
+                item = st.selectbox("الصنف", [i['name'] for i in items])
+                qty = st.number_input("الكمية",0.1,100000.0,1.0)
+                batch = st.text_input("رقم التشغيلة")
+                invoice_date = st.date_input("تاريخ الفاتورة", value=date.today())
+                notes = st.text_input("ملاحظات")
+                uploaded_file = st.file_uploader("📎 إرفاق ملف (صورة أو PDF)", type=["png","jpg","jpeg","pdf"])
+                if st.form_submit_button("تسجيل"):
+                    it = [i for i in items if i['name']==item][0]
+                    conn.execute("""INSERT INTO transactions (transaction_type,item_id,qty,unit_id,batch_number,expiry_date,transaction_date,notes,created_by)
+                                  VALUES (?,?,?,?,?,NULL,?,?,?)""",
+                                 ('وارد',it['id'],qty,it['unit_id'],batch,invoice_date.isoformat(),notes,st.session_state.user['full_name']))
+                    trans_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+                    if uploaded_file:
+                        att = save_attachment(uploaded_file, trans_id)
+                        conn.execute("UPDATE transactions SET attachment=? WHERE id=?", (att, trans_id))
+                    conn.execute("UPDATE items SET current_balance=current_balance+?, last_updated=? WHERE id=?",(qty,date.today().isoformat(),it['id']))
+                    conn.commit()
+                    st.success(f"تم الحفظ بنجاح (تاريخ الفاتورة: {invoice_date.isoformat()})")
+                    st.rerun()
+        conn.close()
+    
+    with tab_in2:
+        st.subheader("سجل المشتريات")
+        conn = get_db()
+        
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            start_date = st.date_input("من تاريخ", date.today()-timedelta(days=30), key="in_start")
+        with col_f2:
+            end_date = st.date_input("إلى تاريخ", date.today(), key="in_end")
+        
+        inward_records = conn.execute("""
+            SELECT t.id, t.transaction_date, i.name as item_name, t.qty, u.unit_symbol, t.notes, t.attachment
+            FROM transactions t
+            JOIN items i ON t.item_id = i.id
+            LEFT JOIN units u ON t.unit_id = u.id
+            WHERE t.transaction_type = 'وارد' 
+            AND t.transaction_date BETWEEN ? AND ?
+            ORDER BY t.id DESC
+        """, (start_date.isoformat(), end_date.isoformat())).fetchall()
+        
+        if inward_records:
+            for rec in inward_records:
+                with st.expander(f"📦 وارد #{rec['id']} - {rec['item_name']} ({rec['qty']} {rec['unit_symbol']}) - {rec['transaction_date']}"):
+                    col_det1, col_det2 = st.columns(2)
+                    with col_det1:
+                        st.write(f"**رقم الحركة:** {rec['id']}")
+                        st.write(f"**الصنف:** {rec['item_name']}")
+                        st.write(f"**الكمية:** {rec['qty']} {rec['unit_symbol']}")
+                    with col_det2:
+                        st.write(f"**التاريخ:** {rec['transaction_date']}")
+                        st.write(f"**ملاحظات:** {rec['notes'] or 'لا يوجد'}")
+                    
+                    if rec['attachment']:
+                        att_path = os.path.join(ATTACHMENTS_FOLDER, rec['attachment'])
+                        if os.path.exists(att_path):
+                            file_ext = os.path.splitext(rec['attachment'])[1].lower()
+                            if file_ext in ['.jpg', '.jpeg', '.png']:
+                                st.image(att_path, caption="المرفق", width=300)
+                            elif file_ext == '.pdf':
+                                with open(att_path, "rb") as f:
+                                    st.download_button("📄 تحميل PDF المرفق", f, file_name=rec['attachment'])
+                            else:
+                                with open(att_path, "rb") as f:
+                                    st.download_button("📎 تحميل المرفق", f, file_name=rec['attachment'])
+                    
+                    if st.button(f"🖨️ طباعة إذن استلام #{rec['id']}", key=f"print_in_{rec['id']}"):
+                        font_path = get_arabic_font()
+                        pdf = FPDF()
+                        pdf.add_page()
+                        if font_path:
+                            pdf.add_font("Amiri", fname=font_path)
+                            pdf.set_font("Amiri", size=16)
+                        else:
+                            pdf.set_font("Helvetica", size=16)
+                        pdf.cell(0, 10, shape_arabic("إذن استلام مشتريات"), ln=True, align='C')
+                        pdf.ln(10)
+                        pdf.set_font("Amiri", size=12) if font_path else pdf.set_font("Helvetica", size=12)
+                        pdf.cell(0, 8, shape_arabic(f"رقم الإذن: IN-{rec['id']}"), ln=True, align='R')
+                        pdf.cell(0, 8, shape_arabic(f"التاريخ: {rec['transaction_date']}"), ln=True, align='R')
+                        pdf.cell(0, 8, shape_arabic(f"الصنف: {rec['item_name']}"), ln=True, align='R')
+                        pdf.cell(0, 8, shape_arabic(f"الكمية: {rec['qty']} {rec['unit_symbol']}"), ln=True, align='R')
+                        pdf.cell(0, 8, shape_arabic(f"ملاحظات: {rec['notes'] or 'لا يوجد'}"), ln=True, align='R')
+                        pdf.ln(10)
+                        pdf.cell(0, 10, shape_arabic("توقيع أمين المخزن: ________________"), ln=True, align='R')
+                        
+                        pdf_bytes = bytes(pdf.output())
+                        st.download_button(f"📥 تحميل PDF الإذن #{rec['id']}", data=pdf_bytes,
+                                           file_name=f"Purchase_Order_{rec['id']}.pdf", mime="application/pdf")
+        else:
+            st.info("لا توجد مشتريات في هذه الفترة")
+        conn.close()
 
 elif choice == "📤 الصادر":
-    st.header("صرف مستلزمات للفنادق")
-    conn = get_db()
-    items = conn.execute("SELECT id, name, current_balance, unit_id FROM items WHERE is_active=1").fetchall()
-    hotels = conn.execute("SELECT id, name FROM hotels").fetchall()
-    if not items or not hotels:
-        st.warning("يجب إضافة أصناف وفنادق أولاً")
-    else:
-        item_options = [f"{it['name']} (الرصيد: {it['current_balance']})" for it in items]
-        if 'outward_items' not in st.session_state:
-            st.session_state.outward_items = []
-
-        st.subheader("إضافة أصناف للإذن")
-        col1, col2 = st.columns(2)
-        with col1:
-            selected_item_str = st.selectbox("الصنف", item_options, key="item_select")
-        with col2:
-            qty = st.number_input("الكمية", min_value=0.1, value=1.0, step=0.1, key="qty_input")
-
-        if st.button("➕ أضف إلى الإذن"):
-            if qty <= 0:
-                st.error("الكمية يجب أن تكون أكبر من صفر")
-            else:
-                item_name = selected_item_str.split(" (الرصيد:")[0]
-                it = next((i for i in items if i['name'] == item_name), None)
-                if it:
-                    if qty > it['current_balance']:
-                        st.error(f"الرصيد غير كافٍ ({it['current_balance']})")
-                    else:
-                        st.session_state.outward_items.append({
-                            'item_id': it['id'],
-                            'item_name': it['name'],
-                            'qty': qty,
-                            'unit_id': it['unit_id']
-                        })
-                        st.success(f"تمت إضافة {item_name} ({qty})")
-                        st.rerun()
-
-        if st.session_state.outward_items:
-            st.subheader("الأصناف في الإذن الحالي")
-            df_current = pd.DataFrame(st.session_state.outward_items)
-            units = conn.execute("SELECT id, unit_symbol FROM units").fetchall()
-            unit_dict_out = {u['id']: u['unit_symbol'] for u in units}
-            df_current['الوحدة'] = df_current['unit_id'].map(unit_dict_out)
-            df_display = df_current[['item_name', 'qty', 'الوحدة']].copy()
-            df_display.columns = ['الصنف', 'الكمية', 'الوحدة']
-            st.dataframe(df_display, use_container_width=True)
-
-            if st.button("🗑️ مسح القائمة"):
+    tab_out1, tab_out2 = st.tabs(["📝 إنشاء إذن صرف", "📋 سجل أذون الصرف"])
+    
+    with tab_out1:
+        st.subheader("إنشاء إذن صرف جديد")
+        conn = get_db()
+        items = conn.execute("SELECT id, name, current_balance, unit_id FROM items WHERE is_active=1").fetchall()
+        hotels = conn.execute("SELECT id, name FROM hotels").fetchall()
+        if not items or not hotels:
+            st.warning("يجب إضافة أصناف وفنادق أولاً")
+        else:
+            item_options = [f"{it['name']} (الرصيد: {it['current_balance']})" for it in items]
+            if 'outward_items' not in st.session_state:
                 st.session_state.outward_items = []
-                st.rerun()
 
-            st.divider()
-            st.subheader("بيانات الإذن")
-            col_order1, col_order2 = st.columns(2)
-            with col_order1:
-                hotel = st.selectbox("الفندق", [h['name'] for h in hotels], key="hotel_select")
-                recipient = st.text_input("اسم مسؤول الاستلام (للتوقيع)", key="recipient")
-            with col_order2:
-                order_date = st.date_input("تاريخ الإذن", value=date.today(), key="order_date")
-            notes = st.text_area("ملاحظات الإذن", key="notes")
+            st.subheader("إضافة أصناف للإذن")
+            col1, col2 = st.columns(2)
+            with col1:
+                selected_item_str = st.selectbox("الصنف", item_options, key="item_select")
+            with col2:
+                qty = st.number_input("الكمية", min_value=0.1, value=1.0, step=0.1, key="qty_input")
 
-            if st.button("✅ تأكيد الصرف وإنشاء الإذن", type="primary"):
-                if not recipient:
-                    st.error("يرجى إدخال اسم مسؤول الاستلام")
-                elif len(st.session_state.outward_items) == 0:
-                    st.error("لم تتم إضافة أي صنف")
+            if st.button("➕ أضف إلى الإذن"):
+                if qty <= 0:
+                    st.error("الكمية يجب أن تكون أكبر من صفر")
                 else:
-                    valid = True
-                    for item_entry in st.session_state.outward_items:
-                        it = conn.execute("SELECT current_balance FROM items WHERE id=?", (item_entry['item_id'],)).fetchone()
-                        if it['current_balance'] < item_entry['qty']:
-                            st.error(f"الرصيد غير كافٍ للصنف {item_entry['item_name']}")
-                            valid = False
-                            break
-                    if valid:
-                        order_number = generate_outward_order_number()
-                        hotel_id = [h['id'] for h in hotels if h['name'] == hotel][0]
-                        conn.execute("""INSERT INTO outward_orders (order_number, hotel_id, recipient_name, order_date, notes, created_by)
-                                      VALUES (?,?,?,?,?,?)""",
-                                     (order_number, hotel_id, recipient, order_date.isoformat(), notes, st.session_state.user['full_name']))
-                        order_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+                    item_name = selected_item_str.split(" (الرصيد:")[0]
+                    it = next((i for i in items if i['name'] == item_name), None)
+                    if it:
+                        if qty > it['current_balance']:
+                            st.error(f"الرصيد غير كافٍ ({it['current_balance']})")
+                        else:
+                            st.session_state.outward_items.append({
+                                'item_id': it['id'],
+                                'item_name': it['name'],
+                                'qty': qty,
+                                'unit_id': it['unit_id']
+                            })
+                            st.success(f"تمت إضافة {item_name} ({qty})")
+                            st.rerun()
 
+            if st.session_state.outward_items:
+                st.subheader("الأصناف في الإذن الحالي")
+                df_current = pd.DataFrame(st.session_state.outward_items)
+                units = conn.execute("SELECT id, unit_symbol FROM units").fetchall()
+                unit_dict_out = {u['id']: u['unit_symbol'] for u in units}
+                df_current['الوحدة'] = df_current['unit_id'].map(unit_dict_out)
+                df_display = df_current[['item_name', 'qty', 'الوحدة']].copy()
+                df_display.columns = ['الصنف', 'الكمية', 'الوحدة']
+                st.dataframe(df_display, use_container_width=True)
+
+                if st.button("🗑️ مسح القائمة"):
+                    st.session_state.outward_items = []
+                    st.rerun()
+
+                st.divider()
+                st.subheader("بيانات الإذن")
+                col_order1, col_order2 = st.columns(2)
+                with col_order1:
+                    hotel = st.selectbox("الفندق", [h['name'] for h in hotels], key="hotel_select")
+                    recipient = st.text_input("اسم مسؤول الاستلام (للتوقيع)", key="recipient")
+                with col_order2:
+                    order_date = st.date_input("تاريخ الإذن", value=date.today(), key="order_date")
+                notes = st.text_area("ملاحظات الإذن", key="notes")
+
+                if st.button("✅ تأكيد الصرف وإنشاء الإذن", type="primary"):
+                    if not recipient:
+                        st.error("يرجى إدخال اسم مسؤول الاستلام")
+                    elif len(st.session_state.outward_items) == 0:
+                        st.error("لم تتم إضافة أي صنف")
+                    else:
+                        valid = True
                         for item_entry in st.session_state.outward_items:
-                            conn.execute("""INSERT INTO transactions (transaction_type, item_id, hotel_id, qty, unit_id, transaction_date, notes, created_by, order_id)
-                                          VALUES (?,?,?,?,?,?,?,?,?)""",
-                                         ('صادر', item_entry['item_id'], hotel_id, item_entry['qty'], item_entry['unit_id'],
-                                          order_date.isoformat(), f"إذن رقم {order_number}", st.session_state.user['full_name'], order_id))
-                            conn.execute("UPDATE items SET current_balance = current_balance - ?, last_updated=? WHERE id=?",
-                                         (item_entry['qty'], date.today().isoformat(), item_entry['item_id']))
+                            it = conn.execute("SELECT current_balance FROM items WHERE id=?", (item_entry['item_id'],)).fetchone()
+                            if it['current_balance'] < item_entry['qty']:
+                                st.error(f"الرصيد غير كافٍ للصنف {item_entry['item_name']}")
+                                valid = False
+                                break
+                        if valid:
+                            order_number = generate_outward_order_number()
+                            hotel_id = [h['id'] for h in hotels if h['name'] == hotel][0]
+                            conn.execute("""INSERT INTO outward_orders (order_number, hotel_id, recipient_name, order_date, notes, created_by)
+                                          VALUES (?,?,?,?,?,?)""",
+                                         (order_number, hotel_id, recipient, order_date.isoformat(), notes, st.session_state.user['full_name']))
+                            order_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
-                        conn.commit()
-                        st.success(f"تم الحفظ بنجاح (تاريخ الإذن: {order_date.isoformat()})")
+                            for item_entry in st.session_state.outward_items:
+                                conn.execute("""INSERT INTO transactions (transaction_type, item_id, hotel_id, qty, unit_id, transaction_date, notes, created_by, order_id)
+                                              VALUES (?,?,?,?,?,?,?,?,?)""",
+                                             ('صادر', item_entry['item_id'], hotel_id, item_entry['qty'], item_entry['unit_id'],
+                                              order_date.isoformat(), f"إذن رقم {order_number}", st.session_state.user['full_name'], order_id))
+                                conn.execute("UPDATE items SET current_balance = current_balance - ?, last_updated=? WHERE id=?",
+                                             (item_entry['qty'], date.today().isoformat(), item_entry['item_id']))
 
-                        pdf_items = []
-                        for item_entry in st.session_state.outward_items:
-                            unit_symbol = unit_dict_out.get(item_entry['unit_id'], '')
-                            pdf_items.append([item_entry['item_name'], str(item_entry['qty']), unit_symbol])
+                            conn.commit()
+                            st.success(f"تم الحفظ بنجاح (تاريخ الإذن: {order_date.isoformat()})")
+
+                            # طباعة PDF مباشرة بعد الحفظ
+                            pdf_items = []
+                            for item_entry in st.session_state.outward_items:
+                                unit_symbol = unit_dict_out.get(item_entry['unit_id'], '')
+                                pdf_items.append([item_entry['item_name'], str(item_entry['qty']), unit_symbol])
+                            font_path = get_arabic_font()
+                            pdf = FPDF()
+                            pdf.add_page()
+                            if font_path:
+                                pdf.add_font("Amiri", fname=font_path)
+                                pdf.set_font("Amiri", size=16)
+                            else:
+                                pdf.set_font("Helvetica", size=16)
+                            pdf.cell(0, 10, shape_arabic("إذن صرف مخزني"), ln=True, align='C')
+                            pdf.ln(5)
+                            pdf.set_font("Amiri", size=12) if font_path else pdf.set_font("Helvetica", size=12)
+                            pdf.cell(0, 8, shape_arabic(f"رقم الإذن: {order_number}"), ln=True, align='R')
+                            pdf.cell(0, 8, shape_arabic(f"التاريخ: {order_date.isoformat()}"), ln=True, align='R')
+                            pdf.cell(0, 8, shape_arabic(f"الفندق: {hotel}"), ln=True, align='R')
+                            pdf.cell(0, 8, shape_arabic(f"مسؤول الاستلام: {recipient}"), ln=True, align='R')
+                            pdf.ln(5)
+                            pdf.set_fill_color(0,168,107); pdf.set_text_color(255,255,255)
+                            pdf.cell(30, 10, shape_arabic("الوحدة"), border=1, fill=True, align='C')
+                            pdf.cell(30, 10, shape_arabic("الكمية"), border=1, fill=True, align='C')
+                            pdf.cell(100, 10, shape_arabic("الصنف"), border=1, fill=True, align='C')
+                            pdf.ln()
+                            pdf.set_text_color(0,0,0)
+                            pdf.set_font("Amiri", size=10) if font_path else pdf.set_font("Helvetica", size=10)
+                            for row in pdf_items:
+                                pdf.cell(30, 8, shape_arabic(row[2]), border=1, align='C')
+                                pdf.cell(30, 8, shape_arabic(row[1]), border=1, align='C')
+                                pdf.cell(100, 8, shape_arabic(row[0]), border=1, align='C')
+                                pdf.ln()
+                            pdf.ln(10)
+                            pdf.cell(0, 10, shape_arabic("توقيع مسؤول الاستلام: ________________"), ln=True, align='R')
+                            pdf.cell(0, 10, shape_arabic("توقيع أمين المخزن: ________________"), ln=True, align='R')
+
+                            pdf_bytes = bytes(pdf.output())
+                            st.download_button("📄 تحميل إذن الصرف PDF", data=pdf_bytes,
+                                               file_name=f"{order_number}.pdf", mime="application/pdf")
+
+                            st.session_state.outward_items = []
+                            st.rerun()
+        conn.close()
+    
+    with tab_out2:
+        st.subheader("سجل أذون الصرف")
+        conn = get_db()
+        
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            start_date = st.date_input("من تاريخ", date.today()-timedelta(days=30), key="out_start")
+        with col_f2:
+            end_date = st.date_input("إلى تاريخ", date.today(), key="out_end")
+        
+        orders = conn.execute("""
+            SELECT o.id, o.order_number, o.order_date, h.name as hotel_name, o.recipient_name, o.notes
+            FROM outward_orders o
+            JOIN hotels h ON o.hotel_id = h.id
+            WHERE o.order_date BETWEEN ? AND ?
+            ORDER BY o.id DESC
+        """, (start_date.isoformat(), end_date.isoformat())).fetchall()
+        
+        if orders:
+            for order in orders:
+                with st.expander(f"📋 إذن {order['order_number']} - {order['hotel_name']} - {order['order_date']}"):
+                    st.write(f"**رقم الإذن:** {order['order_number']}")
+                    st.write(f"**التاريخ:** {order['order_date']}")
+                    st.write(f"**الفندق:** {order['hotel_name']}")
+                    st.write(f"**مسؤول الاستلام:** {order['recipient_name']}")
+                    st.write(f"**ملاحظات:** {order['notes'] or 'لا يوجد'}")
+                    
+                    items_in_order = conn.execute("""
+                        SELECT i.name, t.qty, u.unit_symbol
+                        FROM transactions t
+                        JOIN items i ON t.item_id = i.id
+                        LEFT JOIN units u ON t.unit_id = u.id
+                        WHERE t.order_id = ? AND t.transaction_type = 'صادر'
+                    """, (order['id'],)).fetchall()
+                    
+                    if items_in_order:
+                        st.write("**الأصناف المصروفة:**")
+                        df_items = pd.DataFrame(items_in_order, columns=['الصنف', 'الكمية', 'الوحدة'])
+                        st.dataframe(df_items, use_container_width=True)
+                    
+                    if st.button(f"🖨️ طباعة PDF {order['order_number']}", key=f"print_out_{order['id']}"):
                         font_path = get_arabic_font()
                         pdf = FPDF()
                         pdf.add_page()
@@ -971,10 +1131,10 @@ elif choice == "📤 الصادر":
                         pdf.cell(0, 10, shape_arabic("إذن صرف مخزني"), ln=True, align='C')
                         pdf.ln(5)
                         pdf.set_font("Amiri", size=12) if font_path else pdf.set_font("Helvetica", size=12)
-                        pdf.cell(0, 8, shape_arabic(f"رقم الإذن: {order_number}"), ln=True, align='R')
-                        pdf.cell(0, 8, shape_arabic(f"التاريخ: {order_date.isoformat()}"), ln=True, align='R')
-                        pdf.cell(0, 8, shape_arabic(f"الفندق: {hotel}"), ln=True, align='R')
-                        pdf.cell(0, 8, shape_arabic(f"مسؤول الاستلام: {recipient}"), ln=True, align='R')
+                        pdf.cell(0, 8, shape_arabic(f"رقم الإذن: {order['order_number']}"), ln=True, align='R')
+                        pdf.cell(0, 8, shape_arabic(f"التاريخ: {order['order_date']}"), ln=True, align='R')
+                        pdf.cell(0, 8, shape_arabic(f"الفندق: {order['hotel_name']}"), ln=True, align='R')
+                        pdf.cell(0, 8, shape_arabic(f"مسؤول الاستلام: {order['recipient_name']}"), ln=True, align='R')
                         pdf.ln(5)
                         pdf.set_fill_color(0,168,107); pdf.set_text_color(255,255,255)
                         pdf.cell(30, 10, shape_arabic("الوحدة"), border=1, fill=True, align='C')
@@ -983,22 +1143,21 @@ elif choice == "📤 الصادر":
                         pdf.ln()
                         pdf.set_text_color(0,0,0)
                         pdf.set_font("Amiri", size=10) if font_path else pdf.set_font("Helvetica", size=10)
-                        for row in pdf_items:
-                            pdf.cell(30, 8, shape_arabic(row[2]), border=1, align='C')
-                            pdf.cell(30, 8, shape_arabic(row[1]), border=1, align='C')
-                            pdf.cell(100, 8, shape_arabic(row[0]), border=1, align='C')
+                        for item in items_in_order:
+                            pdf.cell(30, 8, shape_arabic(item['unit_symbol']), border=1, align='C')
+                            pdf.cell(30, 8, shape_arabic(str(item['qty'])), border=1, align='C')
+                            pdf.cell(100, 8, shape_arabic(item['name']), border=1, align='C')
                             pdf.ln()
                         pdf.ln(10)
-                        pdf.cell(0, 10, shape_arabic("توقيع مسؤول الاستلام: ________________"), ln=True, align='R')
+                        pdf.cell(0, 10, shape_arabic(f"توقيع مسؤول الاستلام ({order['recipient_name']}): ________________"), ln=True, align='R')
                         pdf.cell(0, 10, shape_arabic("توقيع أمين المخزن: ________________"), ln=True, align='R')
-
+                        
                         pdf_bytes = bytes(pdf.output())
-                        st.download_button("📄 تحميل إذن الصرف PDF", data=pdf_bytes,
-                                           file_name=f"{order_number}.pdf", mime="application/pdf")
-
-                        st.session_state.outward_items = []
-                        st.rerun()
-    conn.close()
+                        st.download_button(f"📥 تحميل PDF {order['order_number']}", data=pdf_bytes,
+                                           file_name=f"{order['order_number']}.pdf", mime="application/pdf")
+        else:
+            st.info("لا توجد أذون صرف في هذه الفترة")
+        conn.close()
 
 elif choice == "📝 الجرد":
     st.header("الجرد الدوري")
