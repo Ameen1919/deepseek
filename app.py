@@ -1195,6 +1195,11 @@ elif choice == "📈 التقارير":
         hotels = conn.execute("SELECT id, name FROM hotels").fetchall()
         hotel_names = ["الكل"] + [h['name'] for h in hotels]
         selected_hotel = st.selectbox("الفندق", hotel_names)
+        # إضافة فلترة بالصنف
+        items_filter = conn.execute("SELECT id, name FROM items WHERE is_active=1").fetchall()
+        item_names = ["الكل"] + [it['name'] for it in items_filter]
+        selected_item = st.selectbox("الصنف", item_names)
+        
         with st.expander("🎨 تنسيق الجدول"):
             font_scale = st.slider("حجم الخط (%)", 50, 200, 100, step=10, key="report_font")
             color_option = st.selectbox("لون الجدول", ["افتراضي","أخضر","أزرق","رمادي","برتقالي"], key="report_color")
@@ -1218,6 +1223,9 @@ elif choice == "📈 التقارير":
         if selected_hotel != "الكل":
             hotel_id = [h['id'] for h in hotels if h['name']==selected_hotel][0]
             query += " AND t.hotel_id = ?"; params.append(hotel_id)
+        if selected_item != "الكل":
+            item_id = [it['id'] for it in items_filter if it['name']==selected_item][0]
+            query += " AND t.item_id = ?"; params.append(item_id)
         query += " ORDER BY t.id DESC"
         data = conn.execute(query, params).fetchall()
         if data:
@@ -1239,6 +1247,10 @@ elif choice == "📈 التقارير":
             export_df = df.drop(columns=['مرفق'], errors='ignore')
             export_df = export_df[[c for c in ordered if c in export_df.columns]]
             export_buttons(export_df, "حركات", "تقرير الحركات")
+            
+            # عرض الإجمالي
+            total_qty = df['الكمية'].sum()
+            st.markdown(f"**📊 إجمالي الكمية خلال الفترة:** `{total_qty}`")
         else:
             st.info("لا توجد حركات")
     with tab2:
