@@ -921,14 +921,38 @@ elif choice == "📥 الوارد":
         conn = get_db()
         items = conn.execute("SELECT id,name,unit_id FROM items WHERE is_active=1").fetchall()
         if items:
+            # تخزين الحالة الأولية أو المستعادة
+            if 'inward_defaults' not in st.session_state:
+                st.session_state.inward_defaults = {
+                    'item': items[0]['name'] if items else "",
+                    'qty': 1.0,
+                    'batch': "",
+                    'invoice_date': date.today(),
+                    'notes': "",
+                    'attachment': None
+                }
+            # إذا لم تكن هناك قيم مخزنة للتراجع/تقديم، استخدم الافتراضيات
+            if 'inward_form_values' not in st.session_state:
+                st.session_state.inward_form_values = st.session_state.inward_defaults.copy()
+            
             with st.form("inward"):
-                item = st.selectbox("الصنف", [i['name'] for i in items])
-                qty = st.number_input("الكمية",0.1,100000.0,1.0)
-                batch = st.text_input("رقم التشغيلة")
-                invoice_date = st.date_input("تاريخ الفاتورة", value=date.today())
-                notes = st.text_input("ملاحظات")
+                item = st.selectbox("الصنف", [i['name'] for i in items], 
+                                    index=[i['name'] for i in items].index(st.session_state.inward_form_values['item']) if st.session_state.inward_form_values['item'] in [i['name'] for i in items] else 0)
+                qty = st.number_input("الكمية",0.1,100000.0, st.session_state.inward_form_values['qty'])
+                batch = st.text_input("رقم التشغيلة", value=st.session_state.inward_form_values['batch'])
+                invoice_date = st.date_input("تاريخ الفاتورة", value=st.session_state.inward_form_values['invoice_date'])
+                notes = st.text_input("ملاحظات", value=st.session_state.inward_form_values['notes'])
                 uploaded_file = st.file_uploader("📎 إرفاق ملف (صورة أو PDF)", type=["png","jpg","jpeg","pdf"])
-                if st.form_submit_button("تسجيل"):
+                
+                col_submit, col_undo, col_redo = st.columns([2,1,1])
+                with col_submit:
+                    submitted = st.form_submit_button("تسجيل")
+                with col_undo:
+                    undo = st.form_submit_button("↩️ تراجع")
+                with col_redo:
+                    redo = st.form_submit_button("↪️ تقديم")
+                
+                if submitted:
                     it = [i for i in items if i['name']==item][0]
                     conn.execute("""INSERT INTO transactions (transaction_type,item_id,qty,unit_id,batch_number,expiry_date,transaction_date,notes,created_by)
                                   VALUES (?,?,?,?,?,NULL,?,?,?)""",
@@ -940,7 +964,31 @@ elif choice == "📥 الوارد":
                     conn.execute("UPDATE items SET current_balance=current_balance+?, last_updated=? WHERE id=?",(qty,date.today().isoformat(),it['id']))
                     conn.commit()
                     st.success(f"تم الحفظ بنجاح (تاريخ الفاتورة: {invoice_date.isoformat()})")
+                    # تحديث الافتراضيات بعد الحفظ الناجح
+                    st.session_state.inward_defaults = {
+                        'item': item,
+                        'qty': qty,
+                        'batch': batch,
+                        'invoice_date': invoice_date,
+                        'notes': notes,
+                        'attachment': uploaded_file
+                    }
+                    st.session_state.inward_form_values = st.session_state.inward_defaults.copy()
                     st.rerun()
+                
+                if undo:
+                    # الرجوع إلى آخر قيم افتراضية
+                    st.session_state.inward_form_values = st.session_state.inward_defaults.copy()
+                    st.rerun()
+                
+                if redo:
+                    # استعادة القيم التي تم التراجع عنها (إذا كانت محفوظة)
+                    if 'inward_redo_values' in st.session_state:
+                        st.session_state.inward_form_values = st.session_state.inward_redo_values.copy()
+                        st.session_state.inward_redo_values = None
+                        st.rerun()
+                    else:
+                        st.info("لا توجد تعديلات متراجع عنها لتقديمها")
         conn.close()
     
     with tab_in2:
@@ -1045,6 +1093,16 @@ elif choice == "📤 الصادر":
             item_options = [f"{it['name']} (الرصيد: {it['current_balance']})" for it in items]
             if 'outward_items' not in st.session_state:
                 st.session_state.outward_items = []
+            # تخزين الحالة الافتراضية للنموذج
+            if 'outward_form_defaults' not in st.session_state:
+                st.session_state.outward_form_defaults = {
+                    'hotel': hotels[0]['name'],
+                    'recipient': hotels[0]['contact_person'] if hotels[0]['contact_person'] else "",
+                    'order_date': date.today(),
+                    'notes': ""
+                }
+            if 'outward_form_values' not in st.session_state:
+                st.session_state.outward_form_values = st.session_state.outward_form_defaults.copy()
 
             st.subheader("إضافة أصناف للإذن")
             col1, col2 = st.columns(2)
@@ -1091,16 +1149,29 @@ elif choice == "📤 الصادر":
                 col_order1, col_order2 = st.columns(2)
                 with col_order1:
                     hotel_names = [h['name'] for h in hotels]
-                    selected_hotel = st.selectbox("الفندق", hotel_names, key="hotel_select")
-                    # الحصول على بيانات الفندق المختار
+                    selected_hotel = st.selectbox("الفندق", hotel_names, 
+                                                  index=hotel_names.index(st.session_state.outward_form_values['hotel']) if st.session_state.outward_form_values['hotel'] in hotel_names else 0,
+                                                  key="hotel_select")
                     current_hotel = next((h for h in hotels if h['name'] == selected_hotel), None)
                     default_recipient = current_hotel['contact_person'] if current_hotel and current_hotel['contact_person'] else ""
                 with col_order2:
-                    recipient = st.text_input("اسم مسؤول الاستلام (للتوقيع)", value=default_recipient, key="recipient")
-                    order_date = st.date_input("تاريخ الإذن", value=date.today(), key="order_date")
-                notes = st.text_area("ملاحظات الإذن", key="notes")
+                    recipient = st.text_input("اسم مسؤول الاستلام (للتوقيع)", 
+                                              value=st.session_state.outward_form_values['recipient'],
+                                              key="recipient")
+                    order_date = st.date_input("تاريخ الإذن", 
+                                               value=st.session_state.outward_form_values['order_date'],
+                                               key="order_date")
+                notes = st.text_area("ملاحظات الإذن", value=st.session_state.outward_form_values['notes'], key="notes")
 
-                if st.button("✅ تأكيد الصرف وإنشاء الإذن", type="primary"):
+                col_submit, col_undo, col_redo = st.columns([2,1,1])
+                with col_submit:
+                    submitted = st.button("✅ تأكيد الصرف وإنشاء الإذن", type="primary")
+                with col_undo:
+                    undo = st.button("↩️ تراجع")
+                with col_redo:
+                    redo = st.button("↪️ تقديم")
+
+                if submitted:
                     if not recipient:
                         st.error("يرجى إدخال اسم مسؤول الاستلام")
                     elif len(st.session_state.outward_items) == 0:
@@ -1131,7 +1202,17 @@ elif choice == "📤 الصادر":
 
                             conn.commit()
                             st.success(f"تم الحفظ بنجاح (تاريخ الإذن: {order_date.isoformat()})")
-
+                            # تحديث الافتراضيات
+                            st.session_state.outward_form_defaults = {
+                                'hotel': selected_hotel,
+                                'recipient': recipient,
+                                'order_date': order_date,
+                                'notes': notes
+                            }
+                            st.session_state.outward_form_values = st.session_state.outward_form_defaults.copy()
+                            st.session_state.outward_items = []
+                            
+                            # طباعة PDF
                             pdf_items = []
                             for item_entry in st.session_state.outward_items:
                                 unit_symbol = unit_dict_out.get(item_entry['unit_id'], '')
@@ -1172,8 +1253,19 @@ elif choice == "📤 الصادر":
                             st.download_button("📄 تحميل إذن الصرف PDF", data=pdf_bytes,
                                                file_name=f"{order_number}.pdf", mime="application/pdf")
 
-                            st.session_state.outward_items = []
                             st.rerun()
+
+                if undo:
+                    st.session_state.outward_form_values = st.session_state.outward_form_defaults.copy()
+                    st.rerun()
+
+                if redo:
+                    if 'outward_redo_values' in st.session_state:
+                        st.session_state.outward_form_values = st.session_state.outward_redo_values.copy()
+                        st.session_state.outward_redo_values = None
+                        st.rerun()
+                    else:
+                        st.info("لا توجد تعديلات متراجع عنها لتقديمها")
         conn.close()
     
     with tab_out2:
