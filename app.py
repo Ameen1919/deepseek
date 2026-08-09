@@ -345,6 +345,16 @@ def delete_transaction(trans_id):
     conn.commit()
     conn.close()
     return True, "تم حذف الحركة بنجاح"
+def delete_outward_order(order_id):
+    conn = get_db()
+    trans_items = conn.execute("SELECT item_id, qty FROM transactions WHERE order_id=? AND transaction_type='صادر'", (order_id,)).fetchall()
+    for t in trans_items:
+        conn.execute("UPDATE items SET current_balance = current_balance + ?, last_updated=? WHERE id=?", (t['qty'], date.today().isoformat(), t['item_id']))
+    conn.execute("DELETE FROM transactions WHERE order_id=?", (order_id,))
+    conn.execute("DELETE FROM outward_orders WHERE id=?", (order_id,))
+    conn.commit()
+    conn.close()
+    return True, "تم حذف الإذن وإعادة الكميات إلى المخزون"
 def save_attachment(uploaded_file, transaction_id):
     if uploaded_file is None: return None
     file_ext = os.path.splitext(uploaded_file.name)[1]
@@ -583,6 +593,16 @@ elif choice == "📦 إدارة الأصناف":
 
     df = pd.DataFrame(data)
 
+    if 'edited_df' not in st.session_state:
+        st.session_state.edited_df = df.copy()
+    if 'redo_df' not in st.session_state:
+        st.session_state.redo_df = None
+
+    if st.session_state.edited_df is not None:
+        df = st.session_state.edited_df.copy()
+    else:
+        st.session_state.edited_df = df.copy()
+
     edited_df = st.data_editor(
         df,
         column_config={
@@ -603,7 +623,9 @@ elif choice == "📦 إدارة الأصناف":
         key="items_editor"
     )
 
-    col_btn1, col_btn2, col_btn3 = st.columns(3)
+    st.session_state.edited_df = edited_df.copy()
+
+    col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
     with col_btn1:
         if st.button("💾 حفظ جميع التعديلات", type="primary"):
             with conn:
@@ -649,98 +671,148 @@ elif choice == "📦 إدارة الأصناف":
 
             conn.commit()
             st.success("تم حفظ التعديلات بنجاح")
+            items_updated = conn.execute(f"SELECT id, item_code, name, unit_id, current_balance, min_qty, max_qty, is_active, notes FROM items {condition} ORDER BY name").fetchall()
+            new_data = []
+            for it in items_updated:
+                new_data.append({
+                    "id": it["id"],
+                    "item_code": it["item_code"],
+                    "name": it["name"],
+                    "unit_text": unit_id_to_text.get(it["unit_id"], unit_options[0]),
+                    "current_balance": it["current_balance"],
+                    "min_qty": it["min_qty"],
+                    "max_qty": it["max_qty"],
+                    "is_active": bool(it["is_active"]),
+                    "notes": it["notes"],
+                    "delete": False
+                })
+            st.session_state.edited_df = pd.DataFrame(new_data)
+            st.session_state.redo_df = None
             st.rerun()
 
     with col_btn2:
-        if st.button("🔄 إعادة تحميل البيانات"):
+        if st.button("↩️ تراجع"):
+            st.session_state.redo_df = st.session_state.edited_df.copy()
+            items_orig = conn.execute(f"SELECT id, item_code, name, unit_id, current_balance, min_qty, max_qty, is_active, notes FROM items {condition} ORDER BY name").fetchall()
+            orig_data = []
+            for it in items_orig:
+                orig_data.append({
+                    "id": it["id"],
+                    "item_code": it["item_code"],
+                    "name": it["name"],
+                    "unit_text": unit_id_to_text.get(it["unit_id"], unit_options[0]),
+                    "current_balance": it["current_balance"],
+                    "min_qty": it["min_qty"],
+                    "max_qty": it["max_qty"],
+                    "is_active": bool(it["is_active"]),
+                    "notes": it["notes"],
+                    "delete": False
+                })
+            st.session_state.edited_df = pd.DataFrame(orig_data)
             st.rerun()
 
     with col_btn3:
-        with st.expander("📥 استيراد من Excel"):
-            uploaded_file = st.file_uploader("اختر ملف Excel أو CSV", type=["xlsx", "csv"], key="excel_upload")
-            if uploaded_file:
-                try:
-                    if uploaded_file.name.endswith('.csv'):
-                        df_excel = pd.read_csv(uploaded_file)
-                    else:
-                        df_excel = pd.read_excel(uploaded_file)
-                    st.dataframe(df_excel.head())
+        if st.button("↪️ تقديم"):
+            if st.session_state.redo_df is not None:
+                st.session_state.edited_df = st.session_state.redo_df.copy()
+                st.session_state.redo_df = None
+                st.rerun()
+            else:
+                st.info("لا توجد تعديلات متراجع عنها لتقديمها")
 
-                    col_map = {
-                        'اسم الصنف': ['اسم الصنف', 'الصنف', 'name', 'item'],
-                        'الوحدة': ['الوحدة', 'وحدة', 'unit'],
-                        'الحد الأدنى': ['الحد الأدنى', 'حد أدنى', 'min'],
-                        'الحد الأقصى': ['الحد الأقصى', 'حد أقصى', 'max'],
-                        'الرصيد': ['الرصيد', 'الرصيد الافتتاحي', 'balance', 'current'],
-                        'صلاحية': ['صلاحية', 'مدة الصلاحية', 'shelf_life'],
-                        'ملاحظات': ['ملاحظات', 'notes']
-                    }
-                    def find_col(col_list, df_cols):
-                        for c in col_list:
-                            if c in df_cols:
-                                return c
-                        return None
+    with col_btn4:
+        if st.button("🔄 إعادة تحميل البيانات"):
+            st.session_state.edited_df = None
+            st.session_state.redo_df = None
+            st.rerun()
 
-                    name_col = find_col(col_map['اسم الصنف'], df_excel.columns)
-                    unit_col = find_col(col_map['الوحدة'], df_excel.columns)
-                    min_col = find_col(col_map['الحد الأدنى'], df_excel.columns)
-                    max_col = find_col(col_map['الحد الأقصى'], df_excel.columns)
-                    bal_col = find_col(col_map['الرصيد'], df_excel.columns)
-                    shelf_col = find_col(col_map['صلاحية'], df_excel.columns)
-                    notes_col = find_col(col_map['ملاحظات'], df_excel.columns)
+    with st.expander("📥 استيراد من Excel"):
+        uploaded_file = st.file_uploader("اختر ملف Excel أو CSV", type=["xlsx", "csv"], key="excel_upload")
+        if uploaded_file:
+            try:
+                if uploaded_file.name.endswith('.csv'):
+                    df_excel = pd.read_csv(uploaded_file)
+                else:
+                    df_excel = pd.read_excel(uploaded_file)
+                st.dataframe(df_excel.head())
 
-                    if name_col is None:
-                        st.error("❌ لم يتم العثور على عمود 'اسم الصنف' في الملف.")
-                    else:
-                        if st.button("بدء الاستيراد", key="start_import"):
-                            units_list = conn.execute("SELECT id, unit_name, unit_symbol FROM units").fetchall()
-                            unit_dict_excel = {u['unit_name']: u['id'] for u in units_list}
-                            unit_dict_excel.update({u['unit_symbol']: u['id'] for u in units_list})
-                            default_unit_id = units_list[0]['id'] if units_list else 1
+                col_map = {
+                    'اسم الصنف': ['اسم الصنف', 'الصنف', 'name', 'item'],
+                    'الوحدة': ['الوحدة', 'وحدة', 'unit'],
+                    'الحد الأدنى': ['الحد الأدنى', 'حد أدنى', 'min'],
+                    'الحد الأقصى': ['الحد الأقصى', 'حد أقصى', 'max'],
+                    'الرصيد': ['الرصيد', 'الرصيد الافتتاحي', 'balance', 'current'],
+                    'صلاحية': ['صلاحية', 'مدة الصلاحية', 'shelf_life'],
+                    'ملاحظات': ['ملاحظات', 'notes']
+                }
+                def find_col(col_list, df_cols):
+                    for c in col_list:
+                        if c in df_cols:
+                            return c
+                    return None
 
-                            imported = 0
-                            skipped = 0
-                            errors = []
-                            for idx, row in df_excel.iterrows():
-                                try:
-                                    item_name = str(row[name_col]).strip()
-                                    if not item_name:
-                                        continue
-                                    exists = conn.execute("SELECT id FROM items WHERE name=? AND is_active=1", (item_name,)).fetchone()
-                                    if exists:
-                                        skipped += 1
-                                        continue
+                name_col = find_col(col_map['اسم الصنف'], df_excel.columns)
+                unit_col = find_col(col_map['الوحدة'], df_excel.columns)
+                min_col = find_col(col_map['الحد الأدنى'], df_excel.columns)
+                max_col = find_col(col_map['الحد الأقصى'], df_excel.columns)
+                bal_col = find_col(col_map['الرصيد'], df_excel.columns)
+                shelf_col = find_col(col_map['صلاحية'], df_excel.columns)
+                notes_col = find_col(col_map['ملاحظات'], df_excel.columns)
 
-                                    unit_id = default_unit_id
-                                    if unit_col and pd.notnull(row[unit_col]):
-                                        unit_val = str(row[unit_col]).strip()
-                                        if unit_val in unit_dict_excel:
-                                            unit_id = unit_dict_excel[unit_val]
+                if name_col is None:
+                    st.error("❌ لم يتم العثور على عمود 'اسم الصنف' في الملف.")
+                else:
+                    if st.button("بدء الاستيراد", key="start_import"):
+                        units_list = conn.execute("SELECT id, unit_name, unit_symbol FROM units").fetchall()
+                        unit_dict_excel = {u['unit_name']: u['id'] for u in units_list}
+                        unit_dict_excel.update({u['unit_symbol']: u['id'] for u in units_list})
+                        default_unit_id = units_list[0]['id'] if units_list else 1
 
-                                    min_qty = float(row[min_col]) if min_col and pd.notnull(row[min_col]) else 10.0
-                                    max_qty = float(row[max_col]) if max_col and pd.notnull(row[max_col]) else 100.0
-                                    current_balance = float(row[bal_col]) if bal_col and pd.notnull(row[bal_col]) else 0.0
-                                    shelf_life = int(row[shelf_col]) if shelf_col and pd.notnull(row[shelf_col]) else 365
-                                    notes = str(row[notes_col]) if notes_col and pd.notnull(row[notes_col]) else ""
-
-                                    code = f"ITM-{datetime.now().strftime('%Y%m%d%H%M%S')}-{imported+skipped+1}"
-                                    conn.execute("INSERT INTO items (item_code, name, unit_id, min_qty, max_qty, current_balance, shelf_life_days, notes, created_date, last_updated) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                                                 (code, item_name, unit_id, min_qty, max_qty, current_balance, shelf_life, notes, date.today().isoformat(), date.today().isoformat()))
-                                    conn.commit()
-                                    imported += 1
-                                except sqlite3.IntegrityError:
+                        imported = 0
+                        skipped = 0
+                        errors = []
+                        for idx, row in df_excel.iterrows():
+                            try:
+                                item_name = str(row[name_col]).strip()
+                                if not item_name:
+                                    continue
+                                exists = conn.execute("SELECT id FROM items WHERE name=? AND is_active=1", (item_name,)).fetchone()
+                                if exists:
                                     skipped += 1
-                                except Exception as e:
-                                    errors.append(f"صف {idx+2}: {str(e)}")
+                                    continue
 
-                            if imported > 0:
-                                st.success(f"✅ تم استيراد {imported} صنف بنجاح.")
-                            if skipped > 0:
-                                st.info(f"ℹ️ تم تخطي {skipped} صنف لأن أسمائها موجودة مسبقاً.")
-                            if errors:
-                                st.warning("بعض الأخطاء: " + "; ".join(errors[:5]))
-                except Exception as e:
-                    st.error(f"❌ فشل قراءة الملف: {str(e)}")
+                                unit_id = default_unit_id
+                                if unit_col and pd.notnull(row[unit_col]):
+                                    unit_val = str(row[unit_col]).strip()
+                                    if unit_val in unit_dict_excel:
+                                        unit_id = unit_dict_excel[unit_val]
+
+                                min_qty = float(row[min_col]) if min_col and pd.notnull(row[min_col]) else 10.0
+                                max_qty = float(row[max_col]) if max_col and pd.notnull(row[max_col]) else 100.0
+                                current_balance = float(row[bal_col]) if bal_col and pd.notnull(row[bal_col]) else 0.0
+                                shelf_life = int(row[shelf_col]) if shelf_col and pd.notnull(row[shelf_col]) else 365
+                                notes = str(row[notes_col]) if notes_col and pd.notnull(row[notes_col]) else ""
+
+                                code = f"ITM-{datetime.now().strftime('%Y%m%d%H%M%S')}-{imported+skipped+1}"
+                                conn.execute("INSERT INTO items (item_code, name, unit_id, min_qty, max_qty, current_balance, shelf_life_days, notes, created_date, last_updated) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                                             (code, item_name, unit_id, min_qty, max_qty, current_balance, shelf_life, notes, date.today().isoformat(), date.today().isoformat()))
+                                conn.commit()
+                                imported += 1
+                            except sqlite3.IntegrityError:
+                                skipped += 1
+                            except Exception as e:
+                                errors.append(f"صف {idx+2}: {str(e)}")
+
+                        if imported > 0:
+                            st.success(f"✅ تم استيراد {imported} صنف بنجاح.")
+                        if skipped > 0:
+                            st.info(f"ℹ️ تم تخطي {skipped} صنف لأن أسمائها موجودة مسبقاً.")
+                        if errors:
+                            st.warning("بعض الأخطاء: " + "; ".join(errors[:5]))
+                        st.session_state.edited_df = None
+                        st.rerun()
+            except Exception as e:
+                st.error(f"❌ فشل قراءة الملف: {str(e)}")
     conn.close()
 
 elif choice == "📏 الوحدات":
@@ -910,29 +982,45 @@ elif choice == "📥 الوارد":
                                 with open(att_path, "rb") as f:
                                     st.download_button("📎 تحميل المرفق", f, file_name=rec['attachment'])
                     
-                    if st.button(f"🖨️ طباعة إذن استلام #{rec['id']}", key=f"print_in_{rec['id']}"):
-                        font_path = get_arabic_font()
-                        pdf = FPDF()
-                        pdf.add_page()
-                        if font_path:
-                            pdf.add_font("Amiri", fname=font_path)
-                            pdf.set_font("Amiri", size=16)
-                        else:
-                            pdf.set_font("Helvetica", size=16)
-                        pdf.cell(0, 10, shape_arabic("إذن استلام مشتريات"), ln=True, align='C')
-                        pdf.ln(10)
-                        pdf.set_font("Amiri", size=12) if font_path else pdf.set_font("Helvetica", size=12)
-                        pdf.cell(0, 8, shape_arabic(f"رقم الإذن: IN-{rec['id']}"), ln=True, align='R')
-                        pdf.cell(0, 8, shape_arabic(f"التاريخ: {rec['transaction_date']}"), ln=True, align='R')
-                        pdf.cell(0, 8, shape_arabic(f"الصنف: {rec['item_name']}"), ln=True, align='R')
-                        pdf.cell(0, 8, shape_arabic(f"الكمية: {rec['qty']} {rec['unit_symbol']}"), ln=True, align='R')
-                        pdf.cell(0, 8, shape_arabic(f"ملاحظات: {rec['notes'] or 'لا يوجد'}"), ln=True, align='R')
-                        pdf.ln(10)
-                        pdf.cell(0, 10, shape_arabic("توقيع أمين المخزن: ________________"), ln=True, align='R')
-                        
-                        pdf_bytes = bytes(pdf.output())
-                        st.download_button(f"📥 تحميل PDF الإذن #{rec['id']}", data=pdf_bytes,
-                                           file_name=f"Purchase_Order_{rec['id']}.pdf", mime="application/pdf")
+                    col_btn_print, col_btn_delete = st.columns(2)
+                    with col_btn_print:
+                        if st.button(f"🖨️ طباعة إذن استلام #{rec['id']}", key=f"print_in_{rec['id']}"):
+                            font_path = get_arabic_font()
+                            pdf = FPDF()
+                            pdf.add_page()
+                            if font_path:
+                                pdf.add_font("Amiri", fname=font_path)
+                                pdf.set_font("Amiri", size=16)
+                            else:
+                                pdf.set_font("Helvetica", size=16)
+                            pdf.cell(0, 10, shape_arabic("إذن استلام مشتريات"), ln=True, align='C')
+                            pdf.ln(10)
+                            pdf.set_font("Amiri", size=12) if font_path else pdf.set_font("Helvetica", size=12)
+                            pdf.cell(0, 8, shape_arabic(f"رقم الإذن: IN-{rec['id']}"), ln=True, align='R')
+                            pdf.cell(0, 8, shape_arabic(f"التاريخ: {rec['transaction_date']}"), ln=True, align='R')
+                            pdf.cell(0, 8, shape_arabic(f"الصنف: {rec['item_name']}"), ln=True, align='R')
+                            pdf.cell(0, 8, shape_arabic(f"الكمية: {rec['qty']} {rec['unit_symbol']}"), ln=True, align='R')
+                            pdf.cell(0, 8, shape_arabic(f"ملاحظات: {rec['notes'] or 'لا يوجد'}"), ln=True, align='R')
+                            pdf.ln(10)
+                            pdf.cell(0, 10, shape_arabic("توقيع أمين المخزن: ________________"), ln=True, align='R')
+                            
+                            pdf_bytes = bytes(pdf.output())
+                            st.download_button(f"📥 تحميل PDF الإذن #{rec['id']}", data=pdf_bytes,
+                                               file_name=f"Purchase_Order_{rec['id']}.pdf", mime="application/pdf")
+                    with col_btn_delete:
+                        if st.button(f"🗑️ حذف الوارد #{rec['id']}", key=f"del_in_{rec['id']}"):
+                            if st.session_state.get(f"confirm_del_in_{rec['id']}", False):
+                                success, msg = delete_transaction(rec['id'])
+                                if success:
+                                    st.success(msg)
+                                    st.session_state[f"confirm_del_in_{rec['id']}"] = False
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
+                            else:
+                                st.session_state[f"confirm_del_in_{rec['id']}"] = True
+                                st.warning("⚠️ اضغط مرة أخرى لتأكيد الحذف (سيتم خصم الكمية من المخزون).")
+                                st.rerun()
         else:
             st.info("لا توجد مشتريات في هذه الفترة")
         conn.close()
@@ -1034,7 +1122,6 @@ elif choice == "📤 الصادر":
                             conn.commit()
                             st.success(f"تم الحفظ بنجاح (تاريخ الإذن: {order_date.isoformat()})")
 
-                            # طباعة PDF مباشرة بعد الحفظ
                             pdf_items = []
                             for item_entry in st.session_state.outward_items:
                                 unit_symbol = unit_dict_out.get(item_entry['unit_id'], '')
@@ -1119,42 +1206,58 @@ elif choice == "📤 الصادر":
                         df_items = pd.DataFrame(items_in_order, columns=['الصنف', 'الكمية', 'الوحدة'])
                         st.dataframe(df_items, use_container_width=True)
                     
-                    if st.button(f"🖨️ طباعة PDF {order['order_number']}", key=f"print_out_{order['id']}"):
-                        font_path = get_arabic_font()
-                        pdf = FPDF()
-                        pdf.add_page()
-                        if font_path:
-                            pdf.add_font("Amiri", fname=font_path)
-                            pdf.set_font("Amiri", size=16)
-                        else:
-                            pdf.set_font("Helvetica", size=16)
-                        pdf.cell(0, 10, shape_arabic("إذن صرف مخزني"), ln=True, align='C')
-                        pdf.ln(5)
-                        pdf.set_font("Amiri", size=12) if font_path else pdf.set_font("Helvetica", size=12)
-                        pdf.cell(0, 8, shape_arabic(f"رقم الإذن: {order['order_number']}"), ln=True, align='R')
-                        pdf.cell(0, 8, shape_arabic(f"التاريخ: {order['order_date']}"), ln=True, align='R')
-                        pdf.cell(0, 8, shape_arabic(f"الفندق: {order['hotel_name']}"), ln=True, align='R')
-                        pdf.cell(0, 8, shape_arabic(f"مسؤول الاستلام: {order['recipient_name']}"), ln=True, align='R')
-                        pdf.ln(5)
-                        pdf.set_fill_color(0,168,107); pdf.set_text_color(255,255,255)
-                        pdf.cell(30, 10, shape_arabic("الوحدة"), border=1, fill=True, align='C')
-                        pdf.cell(30, 10, shape_arabic("الكمية"), border=1, fill=True, align='C')
-                        pdf.cell(100, 10, shape_arabic("الصنف"), border=1, fill=True, align='C')
-                        pdf.ln()
-                        pdf.set_text_color(0,0,0)
-                        pdf.set_font("Amiri", size=10) if font_path else pdf.set_font("Helvetica", size=10)
-                        for item in items_in_order:
-                            pdf.cell(30, 8, shape_arabic(item['unit_symbol']), border=1, align='C')
-                            pdf.cell(30, 8, shape_arabic(str(item['qty'])), border=1, align='C')
-                            pdf.cell(100, 8, shape_arabic(item['name']), border=1, align='C')
+                    col_btn_print, col_btn_delete = st.columns(2)
+                    with col_btn_print:
+                        if st.button(f"🖨️ طباعة PDF {order['order_number']}", key=f"print_out_{order['id']}"):
+                            font_path = get_arabic_font()
+                            pdf = FPDF()
+                            pdf.add_page()
+                            if font_path:
+                                pdf.add_font("Amiri", fname=font_path)
+                                pdf.set_font("Amiri", size=16)
+                            else:
+                                pdf.set_font("Helvetica", size=16)
+                            pdf.cell(0, 10, shape_arabic("إذن صرف مخزني"), ln=True, align='C')
+                            pdf.ln(5)
+                            pdf.set_font("Amiri", size=12) if font_path else pdf.set_font("Helvetica", size=12)
+                            pdf.cell(0, 8, shape_arabic(f"رقم الإذن: {order['order_number']}"), ln=True, align='R')
+                            pdf.cell(0, 8, shape_arabic(f"التاريخ: {order['order_date']}"), ln=True, align='R')
+                            pdf.cell(0, 8, shape_arabic(f"الفندق: {order['hotel_name']}"), ln=True, align='R')
+                            pdf.cell(0, 8, shape_arabic(f"مسؤول الاستلام: {order['recipient_name']}"), ln=True, align='R')
+                            pdf.ln(5)
+                            pdf.set_fill_color(0,168,107); pdf.set_text_color(255,255,255)
+                            pdf.cell(30, 10, shape_arabic("الوحدة"), border=1, fill=True, align='C')
+                            pdf.cell(30, 10, shape_arabic("الكمية"), border=1, fill=True, align='C')
+                            pdf.cell(100, 10, shape_arabic("الصنف"), border=1, fill=True, align='C')
                             pdf.ln()
-                        pdf.ln(10)
-                        pdf.cell(0, 10, shape_arabic(f"توقيع مسؤول الاستلام ({order['recipient_name']}): ________________"), ln=True, align='R')
-                        pdf.cell(0, 10, shape_arabic("توقيع أمين المخزن: ________________"), ln=True, align='R')
-                        
-                        pdf_bytes = bytes(pdf.output())
-                        st.download_button(f"📥 تحميل PDF {order['order_number']}", data=pdf_bytes,
-                                           file_name=f"{order['order_number']}.pdf", mime="application/pdf")
+                            pdf.set_text_color(0,0,0)
+                            pdf.set_font("Amiri", size=10) if font_path else pdf.set_font("Helvetica", size=10)
+                            for item in items_in_order:
+                                pdf.cell(30, 8, shape_arabic(item['unit_symbol']), border=1, align='C')
+                                pdf.cell(30, 8, shape_arabic(str(item['qty'])), border=1, align='C')
+                                pdf.cell(100, 8, shape_arabic(item['name']), border=1, align='C')
+                                pdf.ln()
+                            pdf.ln(10)
+                            pdf.cell(0, 10, shape_arabic(f"توقيع مسؤول الاستلام ({order['recipient_name']}): ________________"), ln=True, align='R')
+                            pdf.cell(0, 10, shape_arabic("توقيع أمين المخزن: ________________"), ln=True, align='R')
+                            
+                            pdf_bytes = bytes(pdf.output())
+                            st.download_button(f"📥 تحميل PDF {order['order_number']}", data=pdf_bytes,
+                                               file_name=f"{order['order_number']}.pdf", mime="application/pdf")
+                    with col_btn_delete:
+                        if st.button(f"🗑️ حذف الإذن {order['order_number']}", key=f"del_out_{order['id']}"):
+                            if st.session_state.get(f"confirm_del_out_{order['id']}", False):
+                                success, msg = delete_outward_order(order['id'])
+                                if success:
+                                    st.success(msg)
+                                    st.session_state[f"confirm_del_out_{order['id']}"] = False
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
+                            else:
+                                st.session_state[f"confirm_del_out_{order['id']}"] = True
+                                st.warning("⚠️ اضغط مرة أخرى لتأكيد الحذف (ستُعاد الكميات إلى المخزون).")
+                                st.rerun()
         else:
             st.info("لا توجد أذون صرف في هذه الفترة")
         conn.close()
@@ -1195,7 +1298,6 @@ elif choice == "📈 التقارير":
         hotels = conn.execute("SELECT id, name FROM hotels").fetchall()
         hotel_names = ["الكل"] + [h['name'] for h in hotels]
         selected_hotel = st.selectbox("الفندق", hotel_names)
-        # إضافة فلترة بالصنف
         items_filter = conn.execute("SELECT id, name FROM items WHERE is_active=1").fetchall()
         item_names = ["الكل"] + [it['name'] for it in items_filter]
         selected_item = st.selectbox("الصنف", item_names)
@@ -1248,7 +1350,6 @@ elif choice == "📈 التقارير":
             export_df = export_df[[c for c in ordered if c in export_df.columns]]
             export_buttons(export_df, "حركات", "تقرير الحركات")
             
-            # عرض الإجمالي
             total_qty = df['الكمية'].sum()
             st.markdown(f"**📊 إجمالي الكمية خلال الفترة:** `{total_qty}`")
         else:
