@@ -18,15 +18,35 @@ import base64
 # ======================== إعدادات الصفحة ========================
 st.set_page_config(page_title="مخزن النظافة", layout="wide", initial_sidebar_state="expanded")
 
-# ======================== إدارة الحالة العامة ========================
+# ======================== إدارة الحالة العامة والإعدادات الدائمة ========================
+APP_CONFIG_FILE = 'app_config.json'
+
+def load_app_config():
+    if os.path.exists(APP_CONFIG_FILE):
+        with open(APP_CONFIG_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {
+        'font_size': 100,
+        'theme_color': "#00a86b",
+        'logo_path': None,
+        'store_name': "مخزن النظافة"
+    }
+
+def save_app_config(config):
+    with open(APP_CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
+# تحميل الإعدادات الدائمة
+saved_config = load_app_config()
+
 if 'font_size' not in st.session_state:
-    st.session_state.font_size = 100
+    st.session_state.font_size = saved_config.get('font_size', 100)
 if 'theme_color' not in st.session_state:
-    st.session_state.theme_color = "#00a86b"
+    st.session_state.theme_color = saved_config.get('theme_color', "#00a86b")
 if 'logo_path' not in st.session_state:
-    st.session_state.logo_path = None
+    st.session_state.logo_path = saved_config.get('logo_path', None)
 if 'store_name' not in st.session_state:
-    st.session_state.store_name = "مخزن النظافة"
+    st.session_state.store_name = saved_config.get('store_name', "مخزن النظافة")
 
 def apply_theme():
     st.markdown(f"""
@@ -477,6 +497,14 @@ if st.sidebar.button("تحديث الاسم", key="update_name"):
     if new_store_name.strip():
         st.session_state.store_name = new_store_name.strip()
         st.success("✅ تم تحديث اسم المستودع")
+        # حفظ الإعدادات
+        current_config = {
+            'font_size': st.session_state.font_size,
+            'theme_color': st.session_state.theme_color,
+            'logo_path': st.session_state.logo_path,
+            'store_name': st.session_state.store_name
+        }
+        save_app_config(current_config)
         st.rerun()
     else:
         st.error("الاسم لا يمكن أن يكون فارغاً")
@@ -489,6 +517,14 @@ if uploaded_logo is not None:
         f.write(uploaded_logo.getbuffer())
     st.session_state.logo_path = LOGO_FILE
     st.success("✅ تم رفع الشعار بنجاح")
+    # حفظ الإعدادات
+    current_config = {
+        'font_size': st.session_state.font_size,
+        'theme_color': st.session_state.theme_color,
+        'logo_path': st.session_state.logo_path,
+        'store_name': st.session_state.store_name
+    }
+    save_app_config(current_config)
     st.rerun()
 
 if st.session_state.logo_path and os.path.exists(st.session_state.logo_path):
@@ -496,11 +532,26 @@ if st.session_state.logo_path and os.path.exists(st.session_state.logo_path):
         os.remove(st.session_state.logo_path)
         st.session_state.logo_path = None
         st.success("تم مسح الشعار")
+        current_config = {
+            'font_size': st.session_state.font_size,
+            'theme_color': st.session_state.theme_color,
+            'logo_path': st.session_state.logo_path,
+            'store_name': st.session_state.store_name
+        }
+        save_app_config(current_config)
         st.rerun()
 
 if new_font_size != st.session_state.font_size or theme_color != st.session_state.theme_color:
     st.session_state.font_size = new_font_size
     st.session_state.theme_color = theme_color
+    # حفظ الإعدادات عند التغيير
+    current_config = {
+        'font_size': st.session_state.font_size,
+        'theme_color': st.session_state.theme_color,
+        'logo_path': st.session_state.logo_path,
+        'store_name': st.session_state.store_name
+    }
+    save_app_config(current_config)
     st.rerun()
 
 st.sidebar.divider()
@@ -921,7 +972,6 @@ elif choice == "📥 الوارد":
         conn = get_db()
         items = conn.execute("SELECT id,name,unit_id FROM items WHERE is_active=1").fetchall()
         if items:
-            # تخزين الحالة الأولية أو المستعادة
             if 'inward_defaults' not in st.session_state:
                 st.session_state.inward_defaults = {
                     'item': items[0]['name'] if items else "",
@@ -931,7 +981,6 @@ elif choice == "📥 الوارد":
                     'notes': "",
                     'attachment': None
                 }
-            # إذا لم تكن هناك قيم مخزنة للتراجع/تقديم، استخدم الافتراضيات
             if 'inward_form_values' not in st.session_state:
                 st.session_state.inward_form_values = st.session_state.inward_defaults.copy()
             
@@ -964,7 +1013,6 @@ elif choice == "📥 الوارد":
                     conn.execute("UPDATE items SET current_balance=current_balance+?, last_updated=? WHERE id=?",(qty,date.today().isoformat(),it['id']))
                     conn.commit()
                     st.success(f"تم الحفظ بنجاح (تاريخ الفاتورة: {invoice_date.isoformat()})")
-                    # تحديث الافتراضيات بعد الحفظ الناجح
                     st.session_state.inward_defaults = {
                         'item': item,
                         'qty': qty,
@@ -977,12 +1025,10 @@ elif choice == "📥 الوارد":
                     st.rerun()
                 
                 if undo:
-                    # الرجوع إلى آخر قيم افتراضية
                     st.session_state.inward_form_values = st.session_state.inward_defaults.copy()
                     st.rerun()
                 
                 if redo:
-                    # استعادة القيم التي تم التراجع عنها (إذا كانت محفوظة)
                     if 'inward_redo_values' in st.session_state:
                         st.session_state.inward_form_values = st.session_state.inward_redo_values.copy()
                         st.session_state.inward_redo_values = None
@@ -1093,7 +1139,6 @@ elif choice == "📤 الصادر":
             item_options = [f"{it['name']} (الرصيد: {it['current_balance']})" for it in items]
             if 'outward_items' not in st.session_state:
                 st.session_state.outward_items = []
-            # تخزين الحالة الافتراضية للنموذج
             if 'outward_form_defaults' not in st.session_state:
                 st.session_state.outward_form_defaults = {
                     'hotel': hotels[0]['name'],
@@ -1111,24 +1156,34 @@ elif choice == "📤 الصادر":
             with col2:
                 qty = st.number_input("الكمية", min_value=0.1, value=1.0, step=0.1, key="qty_input")
 
-            if st.button("➕ أضف إلى الإذن"):
-                if qty <= 0:
-                    st.error("الكمية يجب أن تكون أكبر من صفر")
-                else:
-                    item_name = selected_item_str.split(" (الرصيد:")[0]
-                    it = next((i for i in items if i['name'] == item_name), None)
-                    if it:
-                        if qty > it['current_balance']:
-                            st.error(f"الرصيد غير كافٍ ({it['current_balance']})")
-                        else:
-                            st.session_state.outward_items.append({
-                                'item_id': it['id'],
-                                'item_name': it['name'],
-                                'qty': qty,
-                                'unit_id': it['unit_id']
-                            })
-                            st.success(f"تمت إضافة {item_name} ({qty})")
-                            st.rerun()
+            col_add, col_undo_items = st.columns(2)
+            with col_add:
+                if st.button("➕ أضف إلى الإذن"):
+                    if qty <= 0:
+                        st.error("الكمية يجب أن تكون أكبر من صفر")
+                    else:
+                        item_name = selected_item_str.split(" (الرصيد:")[0]
+                        it = next((i for i in items if i['name'] == item_name), None)
+                        if it:
+                            if qty > it['current_balance']:
+                                st.error(f"الرصيد غير كافٍ ({it['current_balance']})")
+                            else:
+                                st.session_state.outward_items.append({
+                                    'item_id': it['id'],
+                                    'item_name': it['name'],
+                                    'qty': qty,
+                                    'unit_id': it['unit_id']
+                                })
+                                st.success(f"تمت إضافة {item_name} ({qty})")
+                                st.rerun()
+            with col_undo_items:
+                if st.button("↩️ تراجع آخر إضافة"):
+                    if st.session_state.outward_items:
+                        removed = st.session_state.outward_items.pop()
+                        st.success(f"تم إزالة {removed['item_name']} من الإذن")
+                        st.rerun()
+                    else:
+                        st.info("لا توجد أصناف في القائمة")
 
             if st.session_state.outward_items:
                 st.subheader("الأصناف في الإذن الحالي")
@@ -1202,7 +1257,6 @@ elif choice == "📤 الصادر":
 
                             conn.commit()
                             st.success(f"تم الحفظ بنجاح (تاريخ الإذن: {order_date.isoformat()})")
-                            # تحديث الافتراضيات
                             st.session_state.outward_form_defaults = {
                                 'hotel': selected_hotel,
                                 'recipient': recipient,
