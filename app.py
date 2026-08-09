@@ -35,8 +35,8 @@ def apply_theme():
     *{{font-family:'Tajawal',sans-serif}}
     html,body,[class*="css"]{{direction:rtl;text-align:right;font-size:{st.session_state.font_size}% !important}}
     .stApp {{
-        background-color: {st.session_state.theme_color};
-        background-image: linear-gradient(135deg, {st.session_state.theme_color} 0%, #ffffff 100%);
+        background-color: {st.session_state.theme_color} !important;
+        background-image: linear-gradient(135deg, {st.session_state.theme_color} 0%, #ffffff 100%) !important;
     }}
     .stock-critical{{background-color:#ff4444;color:white;padding:5px 10px;border-radius:5px}}
     .stock-warning{{background-color:#ffbb33;color:black;padding:5px 10px;border-radius:5px}}
@@ -832,6 +832,8 @@ elif choice == "📏 الوحدات":
     if units:
         df = pd.DataFrame(units, columns=['م','الوحدة','الرمز'])
         st.dataframe(df, use_container_width=True)
+    if st.button("🔄 إعادة تحميل الصفحة", key="reload_units"):
+        st.rerun()
     conn.close()
 
 elif choice == "🏨 الفنادق":
@@ -871,6 +873,8 @@ elif choice == "🏨 الفنادق":
                     conn.commit()
                     st.success("تم الحفظ بنجاح"); st.rerun()
         else: st.info("لا توجد فنادق")
+    if st.button("🔄 إعادة تحميل الصفحة", key="reload_hotels"):
+        st.rerun()
     conn.close()
 
 elif choice == "🏢 الموردين":
@@ -905,6 +909,8 @@ elif choice == "🏢 الموردين":
                     conn.execute("UPDATE suppliers SET supplier_name=?, contact_info=? WHERE id=?",(new_name, new_info, s['id']))
                     conn.commit(); st.success("تم الحفظ بنجاح"); st.rerun()
         else: st.info("لا يوجد موردين")
+    if st.button("🔄 إعادة تحميل الصفحة", key="reload_suppliers"):
+        st.rerun()
     conn.close()
 
 elif choice == "📥 الوارد":
@@ -1032,7 +1038,7 @@ elif choice == "📤 الصادر":
         st.subheader("إنشاء إذن صرف جديد")
         conn = get_db()
         items = conn.execute("SELECT id, name, current_balance, unit_id FROM items WHERE is_active=1").fetchall()
-        hotels = conn.execute("SELECT id, name FROM hotels").fetchall()
+        hotels = conn.execute("SELECT id, name, contact_person, phone FROM hotels").fetchall()
         if not items or not hotels:
             st.warning("يجب إضافة أصناف وفنادق أولاً")
         else:
@@ -1084,9 +1090,13 @@ elif choice == "📤 الصادر":
                 st.subheader("بيانات الإذن")
                 col_order1, col_order2 = st.columns(2)
                 with col_order1:
-                    hotel = st.selectbox("الفندق", [h['name'] for h in hotels], key="hotel_select")
-                    recipient = st.text_input("اسم مسؤول الاستلام (للتوقيع)", key="recipient")
+                    hotel_names = [h['name'] for h in hotels]
+                    selected_hotel = st.selectbox("الفندق", hotel_names, key="hotel_select")
+                    # الحصول على بيانات الفندق المختار
+                    current_hotel = next((h for h in hotels if h['name'] == selected_hotel), None)
+                    default_recipient = current_hotel['contact_person'] if current_hotel and current_hotel['contact_person'] else ""
                 with col_order2:
+                    recipient = st.text_input("اسم مسؤول الاستلام (للتوقيع)", value=default_recipient, key="recipient")
                     order_date = st.date_input("تاريخ الإذن", value=date.today(), key="order_date")
                 notes = st.text_area("ملاحظات الإذن", key="notes")
 
@@ -1105,7 +1115,7 @@ elif choice == "📤 الصادر":
                                 break
                         if valid:
                             order_number = generate_outward_order_number()
-                            hotel_id = [h['id'] for h in hotels if h['name'] == hotel][0]
+                            hotel_id = current_hotel['id']
                             conn.execute("""INSERT INTO outward_orders (order_number, hotel_id, recipient_name, order_date, notes, created_by)
                                           VALUES (?,?,?,?,?,?)""",
                                          (order_number, hotel_id, recipient, order_date.isoformat(), notes, st.session_state.user['full_name']))
@@ -1139,7 +1149,7 @@ elif choice == "📤 الصادر":
                             pdf.set_font("Amiri", size=12) if font_path else pdf.set_font("Helvetica", size=12)
                             pdf.cell(0, 8, shape_arabic(f"رقم الإذن: {order_number}"), ln=True, align='R')
                             pdf.cell(0, 8, shape_arabic(f"التاريخ: {order_date.isoformat()}"), ln=True, align='R')
-                            pdf.cell(0, 8, shape_arabic(f"الفندق: {hotel}"), ln=True, align='R')
+                            pdf.cell(0, 8, shape_arabic(f"الفندق: {selected_hotel}"), ln=True, align='R')
                             pdf.cell(0, 8, shape_arabic(f"مسؤول الاستلام: {recipient}"), ln=True, align='R')
                             pdf.ln(5)
                             pdf.set_fill_color(0,168,107); pdf.set_text_color(255,255,255)
