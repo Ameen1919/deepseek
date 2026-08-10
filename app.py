@@ -135,12 +135,15 @@ def init_db():
         created_by TEXT DEFAULT 'أمين المخزن',
         attachment TEXT,
         order_id INTEGER,
+        supplier_name TEXT,
+        unit_price REAL DEFAULT 0,
         FOREIGN KEY (item_id) REFERENCES items(id),
         FOREIGN KEY (hotel_id) REFERENCES hotels(id),
         FOREIGN KEY (unit_id) REFERENCES units(id),
         FOREIGN KEY (order_id) REFERENCES outward_orders(id)
     )''')
-    for col, col_def in [('attachment', 'TEXT'), ('order_id', 'INTEGER')]:
+    # إضافة الأعمدة الجديدة إذا لم تكن موجودة
+    for col, col_def in [('attachment', 'TEXT'), ('order_id', 'INTEGER'), ('supplier_name', 'TEXT'), ('unit_price', 'REAL')]:
         try:
             c.execute(f"ALTER TABLE transactions ADD COLUMN {col} {col_def}")
         except sqlite3.OperationalError:
@@ -497,7 +500,6 @@ if st.sidebar.button("تحديث الاسم", key="update_name"):
     if new_store_name.strip():
         st.session_state.store_name = new_store_name.strip()
         st.success("✅ تم تحديث اسم المستودع")
-        # حفظ الإعدادات
         current_config = {
             'font_size': st.session_state.font_size,
             'theme_color': st.session_state.theme_color,
@@ -517,7 +519,6 @@ if uploaded_logo is not None:
         f.write(uploaded_logo.getbuffer())
     st.session_state.logo_path = LOGO_FILE
     st.success("✅ تم رفع الشعار بنجاح")
-    # حفظ الإعدادات
     current_config = {
         'font_size': st.session_state.font_size,
         'theme_color': st.session_state.theme_color,
@@ -544,7 +545,6 @@ if st.session_state.logo_path and os.path.exists(st.session_state.logo_path):
 if new_font_size != st.session_state.font_size or theme_color != st.session_state.theme_color:
     st.session_state.font_size = new_font_size
     st.session_state.theme_color = theme_color
-    # حفظ الإعدادات عند التغيير
     current_config = {
         'font_size': st.session_state.font_size,
         'theme_color': st.session_state.theme_color,
@@ -971,12 +971,18 @@ elif choice == "📥 الوارد":
         st.subheader("تسجيل مشتريات جديدة")
         conn = get_db()
         items = conn.execute("SELECT id,name,unit_id FROM items WHERE is_active=1").fetchall()
+        suppliers = conn.execute("SELECT id, supplier_name FROM suppliers ORDER BY supplier_name").fetchall()
+        supplier_options = [s['supplier_name'] for s in suppliers]
+        if not supplier_options:
+            supplier_options = ["لا يوجد موردين مسجلين"]
+        
         if items:
             if 'inward_defaults' not in st.session_state:
                 st.session_state.inward_defaults = {
                     'item': items[0]['name'] if items else "",
                     'qty': 1.0,
-                    'batch': "",
+                    'supplier': supplier_options[0] if supplier_options else "",
+                    'unit_price': 0.0,
                     'invoice_date': date.today(),
                     'notes': "",
                     'attachment': None
@@ -988,7 +994,9 @@ elif choice == "📥 الوارد":
                 item = st.selectbox("الصنف", [i['name'] for i in items], 
                                     index=[i['name'] for i in items].index(st.session_state.inward_form_values['item']) if st.session_state.inward_form_values['item'] in [i['name'] for i in items] else 0)
                 qty = st.number_input("الكمية",0.1,100000.0, st.session_state.inward_form_values['qty'])
-                batch = st.text_input("رقم التشغيلة", value=st.session_state.inward_form_values['batch'])
+                supplier = st.selectbox("المورد", supplier_options, 
+                                        index=supplier_options.index(st.session_state.inward_form_values['supplier']) if st.session_state.inward_form_values['supplier'] in supplier_options else 0)
+                unit_price = st.number_input("سعر الوحدة", min_value=0.0, value=st.session_state.inward_form_values['unit_price'], step=0.01)
                 invoice_date = st.date_input("تاريخ الفاتورة", value=st.session_state.inward_form_values['invoice_date'])
                 notes = st.text_input("ملاحظات", value=st.session_state.inward_form_values['notes'])
                 uploaded_file = st.file_uploader("📎 إرفاق ملف (صورة أو PDF)", type=["png","jpg","jpeg","pdf"])
@@ -1003,9 +1011,9 @@ elif choice == "📥 الوارد":
                 
                 if submitted:
                     it = [i for i in items if i['name']==item][0]
-                    conn.execute("""INSERT INTO transactions (transaction_type,item_id,qty,unit_id,batch_number,expiry_date,transaction_date,notes,created_by)
-                                  VALUES (?,?,?,?,?,NULL,?,?,?)""",
-                                 ('وارد',it['id'],qty,it['unit_id'],batch,invoice_date.isoformat(),notes,st.session_state.user['full_name']))
+                    conn.execute("""INSERT INTO transactions (transaction_type,item_id,qty,unit_id,supplier_name,unit_price,expiry_date,transaction_date,notes,created_by)
+                                  VALUES (?,?,?,?,?,?,NULL,?,?,?)""",
+                                 ('وارد',it['id'],qty,it['unit_id'],supplier if supplier != "لا يوجد موردين مسجلين" else "", unit_price, invoice_date.isoformat(),notes,st.session_state.user['full_name']))
                     trans_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
                     if uploaded_file:
                         att = save_attachment(uploaded_file, trans_id)
@@ -1016,7 +1024,8 @@ elif choice == "📥 الوارد":
                     st.session_state.inward_defaults = {
                         'item': item,
                         'qty': qty,
-                        'batch': batch,
+                        'supplier': supplier,
+                        'unit_price': unit_price,
                         'invoice_date': invoice_date,
                         'notes': notes,
                         'attachment': uploaded_file
@@ -1048,7 +1057,7 @@ elif choice == "📥 الوارد":
             end_date = st.date_input("إلى تاريخ", date.today(), key="in_end")
         
         inward_records = conn.execute("""
-            SELECT t.id, t.transaction_date, i.name as item_name, t.qty, u.unit_symbol, t.notes, t.attachment
+            SELECT t.id, t.transaction_date, t.item_id, i.name as item_name, t.qty, u.unit_symbol, t.notes, t.attachment, t.supplier_name, t.unit_price
             FROM transactions t
             JOIN items i ON t.item_id = i.id
             LEFT JOIN units u ON t.unit_id = u.id
@@ -1065,6 +1074,10 @@ elif choice == "📥 الوارد":
                         st.write(f"**رقم الحركة:** {rec['id']}")
                         st.write(f"**الصنف:** {rec['item_name']}")
                         st.write(f"**الكمية:** {rec['qty']} {rec['unit_symbol']}")
+                        if rec['supplier_name']:
+                            st.write(f"**المورد:** {rec['supplier_name']}")
+                        if rec['unit_price']:
+                            st.write(f"**سعر الوحدة:** {rec['unit_price']:.2f}")
                     with col_det2:
                         st.write(f"**التاريخ:** {rec['transaction_date']}")
                         st.write(f"**ملاحظات:** {rec['notes'] or 'لا يوجد'}")
@@ -1082,9 +1095,9 @@ elif choice == "📥 الوارد":
                                 with open(att_path, "rb") as f:
                                     st.download_button("📎 تحميل المرفق", f, file_name=rec['attachment'])
                     
-                    col_btn_print, col_btn_delete = st.columns(2)
+                    col_btn_print, col_btn_edit, col_btn_delete = st.columns(3)
                     with col_btn_print:
-                        if st.button(f"🖨️ طباعة إذن استلام #{rec['id']}", key=f"print_in_{rec['id']}"):
+                        if st.button(f"🖨️ طباعة #{rec['id']}", key=f"print_in_{rec['id']}"):
                             font_path = get_arabic_font()
                             pdf = FPDF()
                             pdf.add_page()
@@ -1100,15 +1113,25 @@ elif choice == "📥 الوارد":
                             pdf.cell(0, 8, shape_arabic(f"التاريخ: {rec['transaction_date']}"), ln=True, align='R')
                             pdf.cell(0, 8, shape_arabic(f"الصنف: {rec['item_name']}"), ln=True, align='R')
                             pdf.cell(0, 8, shape_arabic(f"الكمية: {rec['qty']} {rec['unit_symbol']}"), ln=True, align='R')
+                            if rec['supplier_name']:
+                                pdf.cell(0, 8, shape_arabic(f"المورد: {rec['supplier_name']}"), ln=True, align='R')
+                            if rec['unit_price']:
+                                pdf.cell(0, 8, shape_arabic(f"سعر الوحدة: {rec['unit_price']:.2f}"), ln=True, align='R')
                             pdf.cell(0, 8, shape_arabic(f"ملاحظات: {rec['notes'] or 'لا يوجد'}"), ln=True, align='R')
                             pdf.ln(10)
                             pdf.cell(0, 10, shape_arabic("توقيع أمين المخزن: ________________"), ln=True, align='R')
                             
                             pdf_bytes = bytes(pdf.output())
-                            st.download_button(f"📥 تحميل PDF الإذن #{rec['id']}", data=pdf_bytes,
+                            st.download_button(f"📥 تحميل PDF #{rec['id']}", data=pdf_bytes,
                                                file_name=f"Purchase_Order_{rec['id']}.pdf", mime="application/pdf")
+                    
+                    with col_btn_edit:
+                        if st.button(f"✏️ تعديل #{rec['id']}", key=f"edit_in_{rec['id']}"):
+                            st.session_state[f"editing_in_{rec['id']}"] = True
+                            st.rerun()
+                    
                     with col_btn_delete:
-                        if st.button(f"🗑️ حذف الوارد #{rec['id']}", key=f"del_in_{rec['id']}"):
+                        if st.button(f"🗑️ حذف #{rec['id']}", key=f"del_in_{rec['id']}"):
                             if st.session_state.get(f"confirm_del_in_{rec['id']}", False):
                                 success, msg = delete_transaction(rec['id'])
                                 if success:
@@ -1121,11 +1144,57 @@ elif choice == "📥 الوارد":
                                 st.session_state[f"confirm_del_in_{rec['id']}"] = True
                                 st.warning("⚠️ اضغط مرة أخرى لتأكيد الحذف (سيتم خصم الكمية من المخزون).")
                                 st.rerun()
+                    
+                    if st.session_state.get(f"editing_in_{rec['id']}", False):
+                        with st.form(key=f"edit_form_in_{rec['id']}"):
+                            st.markdown("---")
+                            st.subheader(f"تعديل الوارد #{rec['id']}")
+                            items_list = conn.execute("SELECT id, name, unit_id FROM items WHERE is_active=1").fetchall()
+                            current_item_index = [i['id'] for i in items_list].index(rec['item_id'])
+                            new_item = st.selectbox("الصنف", [i['name'] for i in items_list], index=current_item_index)
+                            new_qty = st.number_input("الكمية", min_value=0.1, value=float(rec['qty']))
+                            # تعديل المورد
+                            suppliers_list = conn.execute("SELECT id, supplier_name FROM suppliers ORDER BY supplier_name").fetchall()
+                            supplier_options_edit = [s['supplier_name'] for s in suppliers_list]
+                            current_supplier = rec['supplier_name'] if rec['supplier_name'] in supplier_options_edit else (supplier_options_edit[0] if supplier_options_edit else "")
+                            new_supplier = st.selectbox("المورد", supplier_options_edit, index=supplier_options_edit.index(current_supplier) if current_supplier else 0)
+                            new_unit_price = st.number_input("سعر الوحدة", min_value=0.0, value=float(rec['unit_price'] if rec['unit_price'] else 0.0), step=0.01)
+                            new_invoice_date = st.date_input("تاريخ الفاتورة", value=datetime.strptime(rec['transaction_date'], '%Y-%m-%d').date())
+                            new_notes = st.text_input("ملاحظات", value=rec['notes'] if rec['notes'] else "")
+                            new_attachment = st.file_uploader("📎 استبدال المرفق (اختياري)", type=["png","jpg","jpeg","pdf"])
+                            col_save, col_cancel = st.columns(2)
+                            with col_save:
+                                save_edit = st.form_submit_button("💾 حفظ التعديلات")
+                            with col_cancel:
+                                cancel_edit = st.form_submit_button("❌ إلغاء")
+                            
+                            if save_edit:
+                                old_item_id = rec['item_id']
+                                new_item_data = next((i for i in items_list if i['name'] == new_item), None)
+                                # تحديث المخزون: خصم الكمية القديمة وإضافة الجديدة
+                                conn.execute("UPDATE items SET current_balance = current_balance - ?, last_updated=? WHERE id=?", (rec['qty'], date.today().isoformat(), old_item_id))
+                                conn.execute("UPDATE items SET current_balance = current_balance + ?, last_updated=? WHERE id=?", (new_qty, date.today().isoformat(), new_item_data['id']))
+                                # تحديث الحركة
+                                attachment_name = rec['attachment']
+                                if new_attachment:
+                                    attachment_name = save_attachment(new_attachment, rec['id'])
+                                conn.execute("""UPDATE transactions SET item_id=?, qty=?, unit_id=?, supplier_name=?, unit_price=?, transaction_date=?, notes=?, attachment=?
+                                              WHERE id=?""",
+                                             (new_item_data['id'], new_qty, new_item_data['unit_id'], new_supplier, new_unit_price, new_invoice_date.isoformat(), new_notes, attachment_name, rec['id']))
+                                conn.commit()
+                                st.success("تم تعديل الوارد بنجاح")
+                                st.session_state[f"editing_in_{rec['id']}"] = False
+                                st.rerun()
+                            
+                            if cancel_edit:
+                                st.session_state[f"editing_in_{rec['id']}"] = False
+                                st.rerun()
         else:
             st.info("لا توجد مشتريات في هذه الفترة")
         conn.close()
 
 elif choice == "📤 الصادر":
+    # ... (نفس الكود السابق للصادر بدون تغيير، لكن مع التأكد من وجود المتغيرات كما هي)
     tab_out1, tab_out2 = st.tabs(["📝 إنشاء إذن صرف", "📋 سجل أذون الصرف"])
     
     with tab_out1:
@@ -1464,12 +1533,12 @@ elif choice == "📈 التقارير":
             color_map = {"افتراضي":"#f0f2f6","أخضر":"#e6ffe6","أزرق":"#e6f0ff","رمادي":"#f5f5f5","برتقالي":"#fff3e6"}
             bg_color = color_map.get(color_option, "#f0f2f6")
 
-            all_columns = ['رقم الحركة','التاريخ','الصنف','النوع','الكمية','الوحدة','الفندق','ملاحظات','مرفق']
-            cols_order = column_selector("اختر الأعمدة ورتبها", all_columns, ['رقم الحركة','التاريخ','الصنف','النوع','الكمية','الوحدة','الفندق','ملاحظات','مرفق'], "trans_cols")
+            all_columns = ['رقم الحركة','التاريخ','الصنف','النوع','الكمية','الوحدة','الفندق','المورد','سعر الوحدة','ملاحظات','مرفق']
+            cols_order = column_selector("اختر الأعمدة ورتبها", all_columns, ['رقم الحركة','التاريخ','الصنف','النوع','الكمية','الوحدة','الفندق','المورد','ملاحظات','مرفق'], "trans_cols")
 
         query = """
             SELECT t.id, t.transaction_date, i.name AS item_name, t.transaction_type, t.qty, u.unit_symbol,
-                   COALESCE(h.name, '-') AS hotel_name, t.notes, t.attachment
+                   COALESCE(h.name, '-') AS hotel_name, t.supplier_name, t.unit_price, t.notes, t.attachment
             FROM transactions t
             JOIN items i ON t.item_id = i.id
             LEFT JOIN hotels h ON t.hotel_id = h.id
@@ -1487,16 +1556,17 @@ elif choice == "📈 التقارير":
         query += " ORDER BY t.id DESC"
         data = conn.execute(query, params).fetchall()
         if data:
-            df = pd.DataFrame(data, columns=['رقم الحركة','التاريخ','الصنف','النوع','الكمية','الوحدة','الفندق','ملاحظات','مرفق'])
+            df = pd.DataFrame(data, columns=['رقم الحركة','التاريخ','الصنف','النوع','الكمية','الوحدة','الفندق','المورد','سعر الوحدة','ملاحظات','مرفق'])
             def attachment_link(fname):
-                if fname:
+                if fname and isinstance(fname, str) and fname.strip():
                     path = os.path.join(ATTACHMENTS_FOLDER, fname)
                     if os.path.exists(path):
-                        with open(path,"rb") as f:
+                        with open(path, "rb") as f:
                             b64 = base64.b64encode(f.read()).decode()
                         return f'<a href="data:application/octet-stream;base64,{b64}" download="{fname}">📎 تحميل</a>'
                 return ""
-            df['مرفق'] = df['مرفق'].apply(attachment_link)
+            if 'مرفق' in df.columns:
+                df['مرفق'] = df['مرفق'].apply(attachment_link)
             ordered = [c for c in cols_order if c in df.columns]
             remaining = [c for c in df.columns if c not in ordered]
             df_display = df[ordered + remaining]
