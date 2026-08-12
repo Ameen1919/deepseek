@@ -36,7 +36,6 @@ def save_app_config(config):
     with open(APP_CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
 
-# تحميل الإعدادات الدائمة
 saved_config = load_app_config()
 
 if 'font_size' not in st.session_state:
@@ -142,7 +141,6 @@ def init_db():
         FOREIGN KEY (unit_id) REFERENCES units(id),
         FOREIGN KEY (order_id) REFERENCES outward_orders(id)
     )''')
-    # إضافة الأعمدة الجديدة إذا لم تكن موجودة
     for col, col_def in [('attachment', 'TEXT'), ('order_id', 'INTEGER'), ('supplier_name', 'TEXT'), ('unit_price', 'REAL')]:
         try:
             c.execute(f"ALTER TABLE transactions ADD COLUMN {col} {col_def}")
@@ -337,8 +335,17 @@ def create_backup(typ="يدوي",notes=""):
         return True, zipf, f"تم إنشاء النسخة {name}.zip"
     except Exception as e:
         return False, None, str(e)
+
 def restore_backup(zip_path):
+    """استعادة نسخة احتياطية مع إعادة حساب الأرصدة تلقائياً"""
     try:
+        # إغلاق أي اتصال بقاعدة البيانات الحالية
+        try:
+            conn = sqlite3.connect(DB_NAME)
+            conn.close()
+        except:
+            pass
+
         tmp = "tmp_res"
         if os.path.exists(tmp): shutil.rmtree(tmp)
         os.makedirs(tmp)
@@ -348,9 +355,12 @@ def restore_backup(zip_path):
             if os.path.exists(DB_NAME): shutil.copy2(DB_NAME, DB_NAME+".emergency")
             shutil.copy2(db_src, DB_NAME)
         shutil.rmtree(tmp)
-        return True, "تمت الاستعادة"
+        # إعادة حساب الأرصدة بعد الاستعادة
+        recalculate_all_balances()
+        return True, "تمت الاستعادة بنجاح وتم إعادة حساب جميع الأرصدة."
     except Exception as e:
         return False, str(e)
+
 def delete_transaction(trans_id):
     conn = get_db()
     trans = conn.execute("SELECT * FROM transactions WHERE id=?", (trans_id,)).fetchone()
@@ -368,6 +378,7 @@ def delete_transaction(trans_id):
     conn.commit()
     conn.close()
     return True, "تم حذف الحركة بنجاح"
+
 def delete_outward_order(order_id):
     conn = get_db()
     trans_items = conn.execute("SELECT item_id, qty FROM transactions WHERE order_id=? AND transaction_type='صادر'", (order_id,)).fetchall()
@@ -378,6 +389,7 @@ def delete_outward_order(order_id):
     conn.commit()
     conn.close()
     return True, "تم حذف الإذن وإعادة الكميات إلى المخزون"
+
 def save_attachment(uploaded_file, transaction_id):
     if uploaded_file is None: return None
     file_ext = os.path.splitext(uploaded_file.name)[1]
@@ -454,12 +466,28 @@ def download_db_from_drive():
         return False
 
 def sync_db_if_needed():
+    """استعادة قاعدة البيانات من Google Drive إذا كانت مفقودة محلياً، مع إعادة حساب الأرصدة"""
     if not os.path.exists(DB_NAME):
         if st.secrets.get("google_drive"):
             if download_db_from_drive():
-                st.success("✅ تم استعادة البيانات بنجاح من Google Drive.")
+                recalculate_all_balances()
+                st.success("✅ تم استعادة البيانات من Google Drive وإعادة حساب الأرصدة.")
             else:
                 st.warning("⚠️ لم يتم العثور على نسخة احتياطية في Drive. بدء قاعدة بيانات جديدة.")
+
+# ======================== دالة إعادة حساب الأرصدة ========================
+def recalculate_all_balances():
+    """إعادة حساب current_balance لكل صنف بناءً على جميع الحركات المسجلة"""
+    conn = get_db()
+    items = conn.execute("SELECT id FROM items").fetchall()
+    for item in items:
+        total_in = conn.execute("SELECT COALESCE(SUM(qty),0) FROM transactions WHERE item_id=? AND transaction_type IN ('وارد','تسوية إضافة')", (item['id'],)).fetchone()[0]
+        total_out = conn.execute("SELECT COALESCE(SUM(qty),0) FROM transactions WHERE item_id=? AND transaction_type IN ('صادر','تسوية عجز')", (item['id'],)).fetchone()[0]
+        new_balance = total_in - total_out
+        conn.execute("UPDATE items SET current_balance = ?, last_updated = ? WHERE id = ?", (new_balance, date.today().isoformat(), item['id']))
+    conn.commit()
+    conn.close()
+    return True
 
 # ======================== بدء التشغيل ========================
 init_db()
@@ -776,6 +804,13 @@ elif choice == "📦 إدارة الأصناف":
             st.session_state.edited_df = None
             st.session_state.redo_df = None
             st.rerun()
+
+    st.divider()
+    if st.button("🔁 إعادة حساب جميع الأرصدة (من الحركات)"):
+        with st.spinner("جاري إعادة حساب الأرصدة..."):
+            recalculate_all_balances()
+        st.success("تمت إعادة حساب جميع الأرصدة بنجاح. الأرصدة الآن مطابقة للحركات الفعلية.")
+        st.rerun()
 
     with st.expander("📥 استيراد من Excel"):
         uploaded_file = st.file_uploader("اختر ملف Excel أو CSV", type=["xlsx", "csv"], key="excel_upload")
@@ -1122,7 +1157,7 @@ elif choice == "📥 الوارد":
                             pdf.cell(0, 10, shape_arabic("توقيع أمين المخزن: ________________"), ln=True, align='R')
                             
                             pdf_bytes = bytes(pdf.output())
-                            st.download_button(f"📥 تحميل PDF #{rec['id']}", data=pdf_bytes,
+                            st.download_button(f"📥 تحميل PDF الإذن #{rec['id']}", data=pdf_bytes,
                                                file_name=f"Purchase_Order_{rec['id']}.pdf", mime="application/pdf")
                     
                     with col_btn_edit:
@@ -1153,7 +1188,6 @@ elif choice == "📥 الوارد":
                             current_item_index = [i['id'] for i in items_list].index(rec['item_id'])
                             new_item = st.selectbox("الصنف", [i['name'] for i in items_list], index=current_item_index)
                             new_qty = st.number_input("الكمية", min_value=0.1, value=float(rec['qty']))
-                            # تعديل المورد
                             suppliers_list = conn.execute("SELECT id, supplier_name FROM suppliers ORDER BY supplier_name").fetchall()
                             supplier_options_edit = [s['supplier_name'] for s in suppliers_list]
                             current_supplier = rec['supplier_name'] if rec['supplier_name'] in supplier_options_edit else (supplier_options_edit[0] if supplier_options_edit else "")
@@ -1171,10 +1205,8 @@ elif choice == "📥 الوارد":
                             if save_edit:
                                 old_item_id = rec['item_id']
                                 new_item_data = next((i for i in items_list if i['name'] == new_item), None)
-                                # تحديث المخزون: خصم الكمية القديمة وإضافة الجديدة
                                 conn.execute("UPDATE items SET current_balance = current_balance - ?, last_updated=? WHERE id=?", (rec['qty'], date.today().isoformat(), old_item_id))
                                 conn.execute("UPDATE items SET current_balance = current_balance + ?, last_updated=? WHERE id=?", (new_qty, date.today().isoformat(), new_item_data['id']))
-                                # تحديث الحركة
                                 attachment_name = rec['attachment']
                                 if new_attachment:
                                     attachment_name = save_attachment(new_attachment, rec['id'])
@@ -1194,7 +1226,6 @@ elif choice == "📥 الوارد":
         conn.close()
 
 elif choice == "📤 الصادر":
-    # ... (نفس الكود السابق للصادر بدون تغيير، لكن مع التأكد من وجود المتغيرات كما هي)
     tab_out1, tab_out2 = st.tabs(["📝 إنشاء إذن صرف", "📋 سجل أذون الصرف"])
     
     with tab_out1:
@@ -1495,18 +1526,20 @@ elif choice == "📝 الجرد":
         item = st.selectbox("الصنف", [i['name'] for i in items])
         it = [i for i in items if i['name']==item][0]
         st.info(f"الرصيد المسجل: {it['current_balance']}")
-        actual = st.number_input("الكمية الفعلية",0.0, value=float(it['current_balance']))
+        actual = st.number_input("الكمية الفعلية", value=float(it['current_balance']), step=0.1, key="actual_qty")
         notes = st.text_input("ملاحظات")
         if st.button("حفظ الجرد"):
             diff = actual - it['current_balance']
             if diff != 0:
                 conn.execute("INSERT INTO transactions (transaction_type,item_id,qty,unit_id,transaction_date,notes,created_by) VALUES (?,?,?,?,?,?,?)",
                              ('تسوية إضافة' if diff>0 else 'تسوية عجز', it['id'], abs(diff), it['unit_id'], date.today().isoformat(), notes, st.session_state.user['full_name']))
+                st.success(f"تم إضافة حركة {'تسوية إضافة' if diff>0 else 'تسوية عجز'} بمقدار {abs(diff)}.")
             conn.execute("UPDATE items SET current_balance=?, last_updated=? WHERE id=?",(actual,date.today().isoformat(),it['id']))
             conn.execute("INSERT INTO inventory_counts (count_date,item_id,expected_qty,actual_qty,difference,notes,counted_by) VALUES (?,?,?,?,?,?,?)",
                          (date.today().isoformat(),it['id'],it['current_balance'],actual,diff,notes,st.session_state.user['full_name']))
             conn.commit()
-            st.success("تم الحفظ بنجاح")
+            st.success("تم حفظ الجرد بنجاح")
+            st.info("💡 حركات التسوية تظهر في التقارير عند اختيار 'الكل' أو 'تسوية إضافة/عجز'.")
             st.rerun()
     conn.close()
 
