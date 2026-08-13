@@ -903,19 +903,35 @@ elif choice == "📏 الوحدات":
     if not check_perm(): st.error("غير مصرح"); st.stop()
     st.header("وحدات القياس")
     conn = get_db()
-    with st.form("add_unit"):
-        un = st.text_input("اسم الوحدة")
-        us = st.text_input("الرمز")
-        if st.form_submit_button("إضافة"):
-            if un:
-                conn.execute("INSERT OR IGNORE INTO units (unit_name, unit_symbol) VALUES (?,?)",(un,us))
+    tab1, tab2 = st.tabs(["➕ إضافة وحدة", "✏️ تعديل الوحدات"])  # <-- هنا التعديل
+    with tab1:
+        with st.form("add_unit"):
+            un = st.text_input("اسم الوحدة")
+            us = st.text_input("الرمز")
+            if st.form_submit_button("إضافة"):
+                if un:
+                    conn.execute("INSERT OR IGNORE INTO units (unit_name, unit_symbol) VALUES (?,?)",(un,us))
+                    conn.commit()
+                    st.success("تم الحفظ بنجاح")
+                    st.rerun()
+    with tab2:
+        units = conn.execute("SELECT id, unit_name, unit_symbol FROM units").fetchall()
+        if units:
+            df_units = pd.DataFrame(units, columns=['م','الوحدة','الرمز'])
+            edited_units = st.data_editor(df_units, num_rows="dynamic", key="units_editor", use_container_width=True)
+            if st.button("💾 حفظ تعديلات الوحدات", key="save_units"):
+                with conn:
+                    for _, row in edited_units.iterrows():
+                        if pd.notna(row['م']):
+                            conn.execute("UPDATE units SET unit_name=?, unit_symbol=? WHERE id=?", (row['الوحدة'], row['الرمز'], int(row['م'])))
+                        else:
+                            if pd.notna(row['الوحدة']) and str(row['الوحدة']).strip():
+                                conn.execute("INSERT OR IGNORE INTO units (unit_name, unit_symbol) VALUES (?,?)", (row['الوحدة'], row['الرمز']))
                 conn.commit()
-                st.success("تم الحفظ بنجاح")
+                st.success("تم حفظ التعديلات بنجاح")
                 st.rerun()
-    units = conn.execute("SELECT * FROM units").fetchall()
-    if units:
-        df = pd.DataFrame(units, columns=['م','الوحدة','الرمز'])
-        st.dataframe(df, use_container_width=True)
+        else:
+            st.info("لا توجد وحدات")
     if st.button("🔄 إعادة تحميل الصفحة", key="reload_units"):
         st.rerun()
     conn.close()
@@ -1628,7 +1644,9 @@ elif choice == "📈 التقارير":
             df_disp = df[ordered + remaining]
             st.dataframe(df_disp, use_container_width=True)
             st.markdown(apply_table_styling(font_scale2, bg2), unsafe_allow_html=True)
-            export_buttons(df_disp, "ارصدة", "تقرير الأرصدة")
+            # نضيف التاريخ في عنوان التقرير عند الطباعة
+            report_title = f"تقرير الأرصدة - {date.today().strftime('%Y-%m-%d')}"
+            export_buttons(df_disp, "ارصدة", report_title)
         else:
             st.info("لا توجد أصناف نشطة")
     conn.close()
