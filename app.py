@@ -582,6 +582,22 @@ elif has_role('supervisor'):
 
 choice = st.selectbox("القائمة", menu, index=0)
 
+# ======================== دوال مساعدة للجداول القابلة للتخصيص ========================
+def apply_table_styling(font_scale, bg_color):
+    return f"""<style>
+        div[data-testid="stDataFrame"] div[data-testid="stTable"] {{ font-size: {font_scale}% !important; }}
+        div[data-testid="stDataFrame"] table {{ background-color: {bg_color} !important; }}
+    </style>"""
+
+def column_selector(label, all_columns, default_order, key):
+    if key not in st.session_state:
+        st.session_state[key] = default_order
+    new_order = st.multiselect(label, options=all_columns, default=st.session_state[key], key=key+"_multiselect")
+    if new_order != st.session_state[key]:
+        st.session_state[key] = new_order
+        st.rerun()
+    return st.session_state[key]
+
 # ======================== الصفحات ========================
 if choice == "📊 لوحة التحكم":
     st.header("لوحة التحكم")
