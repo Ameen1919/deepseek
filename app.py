@@ -16,7 +16,7 @@ from bidi.algorithm import get_display
 import base64
 
 # ======================== إعدادات الصفحة ========================
-st.set_page_config(page_title="مخزن النظافة", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="مخزن النظافة", layout="wide", initial_sidebar_state="collapsed")
 
 # ======================== إدارة الحالة العامة والإعدادات الدائمة ========================
 APP_CONFIG_FILE = 'app_config.json'
@@ -507,80 +507,66 @@ if not st.session_state.logged_in:
             else: st.error("خطأ")
     st.stop()
 
-# -------------------- الشريط الجانبي --------------------
-st.sidebar.title(f"🧹 {st.session_state.store_name}")
+# ======================== الواجهة الرئيسية بدون شريط جانبي ========================
+st.title(f"🧹 {st.session_state.store_name}")
 if st.session_state.logo_path and os.path.exists(st.session_state.logo_path):
-    st.sidebar.image(st.session_state.logo_path, width=150)
-st.sidebar.write(f"مرحباً {st.session_state.user['full_name']} ({st.session_state.user['role']})")
-if st.sidebar.button("تسجيل الخروج"): logout()
-st.sidebar.divider()
+    st.image(st.session_state.logo_path, width=150)
+st.write(f"مرحباً {st.session_state.user['full_name']} ({st.session_state.user['role']})")
+if st.button("تسجيل الخروج"):
+    logout()
 
-# إعدادات المظهر واسم المستودع
-st.sidebar.subheader("🎨 إعدادات المظهر")
-new_font_size = st.sidebar.slider("حجم الخط (%)", 50, 200, st.session_state.font_size, step=10, key="global_font")
-theme_color = st.sidebar.color_picker("لون البرنامج", st.session_state.theme_color, key="global_theme")
-
-st.sidebar.subheader("🏷️ اسم المستودع")
-new_store_name = st.sidebar.text_input("أدخل الاسم الجديد", value=st.session_state.store_name, key="store_name_input")
-if st.sidebar.button("تحديث الاسم", key="update_name"):
-    if new_store_name.strip():
-        st.session_state.store_name = new_store_name.strip()
-        st.success("✅ تم تحديث اسم المستودع")
-        current_config = {
+with st.expander("⚙️ الإعدادات", expanded=False):
+    new_font_size = st.slider("حجم الخط (%)", 50, 200, st.session_state.font_size, step=10, key="global_font")
+    theme_color = st.color_picker("لون البرنامج", st.session_state.theme_color, key="global_theme")
+    new_store_name = st.text_input("اسم المستودع", value=st.session_state.store_name, key="store_name_input")
+    if st.button("تحديث الاسم", key="update_name"):
+        if new_store_name.strip():
+            st.session_state.store_name = new_store_name.strip()
+            st.success("✅ تم تحديث اسم المستودع")
+            save_app_config({
+                'font_size': st.session_state.font_size,
+                'theme_color': st.session_state.theme_color,
+                'logo_path': st.session_state.logo_path,
+                'store_name': st.session_state.store_name
+            })
+            st.rerun()
+        else:
+            st.error("الاسم لا يمكن أن يكون فارغاً")
+    uploaded_logo = st.file_uploader("📷 رفع شعار", type=["png","jpg","jpeg"], key="logo_uploader")
+    if uploaded_logo is not None:
+        with open(LOGO_FILE, "wb") as f:
+            f.write(uploaded_logo.getbuffer())
+        st.session_state.logo_path = LOGO_FILE
+        st.success("✅ تم رفع الشعار بنجاح")
+        save_app_config({
             'font_size': st.session_state.font_size,
             'theme_color': st.session_state.theme_color,
             'logo_path': st.session_state.logo_path,
             'store_name': st.session_state.store_name
-        }
-        save_app_config(current_config)
+        })
         st.rerun()
-    else:
-        st.error("الاسم لا يمكن أن يكون فارغاً")
-
-st.sidebar.markdown("---")
-
-uploaded_logo = st.sidebar.file_uploader("📷 رفع شعار", type=["png","jpg","jpeg"], key="logo_uploader")
-if uploaded_logo is not None:
-    with open(LOGO_FILE, "wb") as f:
-        f.write(uploaded_logo.getbuffer())
-    st.session_state.logo_path = LOGO_FILE
-    st.success("✅ تم رفع الشعار بنجاح")
-    current_config = {
-        'font_size': st.session_state.font_size,
-        'theme_color': st.session_state.theme_color,
-        'logo_path': st.session_state.logo_path,
-        'store_name': st.session_state.store_name
-    }
-    save_app_config(current_config)
-    st.rerun()
-
-if st.session_state.logo_path and os.path.exists(st.session_state.logo_path):
-    if st.sidebar.button("🗑️ مسح الشعار"):
-        os.remove(st.session_state.logo_path)
-        st.session_state.logo_path = None
-        st.success("تم مسح الشعار")
-        current_config = {
+    if st.session_state.logo_path and os.path.exists(st.session_state.logo_path):
+        if st.button("🗑️ مسح الشعار"):
+            os.remove(st.session_state.logo_path)
+            st.session_state.logo_path = None
+            st.success("تم مسح الشعار")
+            save_app_config({
+                'font_size': st.session_state.font_size,
+                'theme_color': st.session_state.theme_color,
+                'logo_path': st.session_state.logo_path,
+                'store_name': st.session_state.store_name
+            })
+            st.rerun()
+    if new_font_size != st.session_state.font_size or theme_color != st.session_state.theme_color:
+        st.session_state.font_size = new_font_size
+        st.session_state.theme_color = theme_color
+        save_app_config({
             'font_size': st.session_state.font_size,
             'theme_color': st.session_state.theme_color,
             'logo_path': st.session_state.logo_path,
             'store_name': st.session_state.store_name
-        }
-        save_app_config(current_config)
+        })
         st.rerun()
-
-if new_font_size != st.session_state.font_size or theme_color != st.session_state.theme_color:
-    st.session_state.font_size = new_font_size
-    st.session_state.theme_color = theme_color
-    current_config = {
-        'font_size': st.session_state.font_size,
-        'theme_color': st.session_state.theme_color,
-        'logo_path': st.session_state.logo_path,
-        'store_name': st.session_state.store_name
-    }
-    save_app_config(current_config)
-    st.rerun()
-
-st.sidebar.divider()
 
 menu = []
 if check_perm():
@@ -594,23 +580,7 @@ elif has_role('disbursement'):
 elif has_role('supervisor'):
     menu = ["📊 لوحة التحكم","📝 الجرد","📈 التقارير"]
 
-choice = st.sidebar.radio("القائمة", menu)
-
-# ======================== دوال مساعدة للجداول القابلة للتخصيص ========================
-def apply_table_styling(font_scale, bg_color):
-    return f"""<style>
-        div[data-testid="stDataFrame"] div[data-testid="stTable"] {{ font-size: {font_scale}% !important; }}
-        div[data-testid="stDataFrame"] table {{ background-color: {bg_color} !important; }}
-    </style>"""
-
-def column_selector(label, all_columns, default_order, key):
-    if key not in st.session_state:
-        st.session_state[key] = default_order
-    new_order = st.multiselect(label, options=all_columns, default=st.session_state[key], key=key+"_multiselect")
-    if new_order != st.session_state[key]:
-        st.session_state[key] = new_order
-        st.rerun()
-    return st.session_state[key]
+choice = st.selectbox("القائمة", menu, index=0)
 
 # ======================== الصفحات ========================
 if choice == "📊 لوحة التحكم":
@@ -903,7 +873,7 @@ elif choice == "📏 الوحدات":
     if not check_perm(): st.error("غير مصرح"); st.stop()
     st.header("وحدات القياس")
     conn = get_db()
-    tab1, tab2 = st.tabs(["➕ إضافة وحدة", "✏️ تعديل الوحدات"])  # <-- هنا التعديل
+    tab1, tab2 = st.tabs(["➕ إضافة وحدة", "✏️ تعديل الوحدات"])
     with tab1:
         with st.form("add_unit"):
             un = st.text_input("اسم الوحدة")
