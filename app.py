@@ -180,7 +180,7 @@ def init_db():
                 is_active BOOLEAN DEFAULT TRUE
             )''')
 
-            # تعديل أنواع الحقول لضمان استيعاب أطوال النصوص المشفرة والصلاحيات
+            # تعديل أنواع الحقول
             c.execute('''ALTER TABLE users ALTER COLUMN username TYPE TEXT;''')
             c.execute('''ALTER TABLE users ALTER COLUMN password TYPE TEXT;''')
             c.execute('''ALTER TABLE users ALTER COLUMN role TYPE TEXT;''')
@@ -198,8 +198,15 @@ def init_db():
                 ('مشرف1',hash_password('sup123'),'supervisor','مشرف أول'),
                 ('مشرف2',hash_password('sup456'),'supervisor','مشرف ثاني')
             ]
+            
+            # تحديث أو إضافة المستخدمين والتأكد من تحديث كلمة المرور للحساب الرئيسية
             for uname,pwd,role,fname in default_users:
-                c.execute("INSERT INTO users (username,password,role,full_name) VALUES (%s,%s,%s,%s) ON CONFLICT (username) DO NOTHING",(uname,pwd,role,fname))
+                c.execute("""
+                    INSERT INTO users (username, password, role, full_name, is_active)
+                    VALUES (%s, %s, %s, %s, TRUE)
+                    ON CONFLICT (username) DO UPDATE 
+                    SET password = EXCLUDED.password, role = EXCLUDED.role, full_name = EXCLUDED.full_name, is_active = TRUE;
+                """, (uname, pwd, role, fname))
 
 def login(username, password):
     with get_db() as conn:
@@ -308,8 +315,8 @@ if not st.session_state.logged_in:
         pwd = st.text_input("كلمة المرور", type="password")
         if st.form_submit_button("دخول"):
             if login(uname, pwd):
-                st.success("تم الدخول"); st.rerun()
-            else: st.error("خطأ في بيانات الدخول")
+                st.success("تم الدخول بنجاح"); st.rerun()
+            else: st.error("خطأ في بيانات الدخول، يرجى التثبت من اسم المستخدم وكلمة المرور.")
     st.stop()
 
 # ======================== الواجهة الرئيسية ========================
