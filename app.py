@@ -68,14 +68,8 @@ def apply_theme():
 apply_theme()
 
 # ======================== الاتصال بقاعدة بيانات Supabase (PostgreSQL) ========================
-DEFAULT_DB_URL = "postgresql://postgres:Ameen_Ali_1919@db.krrbpyleyvcmshcqcdog.supabase.co:5432/postgres"
-
-def get_db_url():
-    if "postgres" in st.secrets and "db_url" in st.secrets["postgres"]:
-        return st.secrets["postgres"]["db_url"]
-    return DEFAULT_DB_URL
-
-DB_URL = get_db_url()
+# الاتصال المباشر والمعدل للسرعة وعدم الخطأ
+DB_URL = "postgresql://postgres:Ameen_Ali_1919@db.krrbpyleyvcmshcqcdog.supabase.co:5432/postgres".replace("%", "%%")
 
 @st.cache_resource
 def init_connection_pool():
