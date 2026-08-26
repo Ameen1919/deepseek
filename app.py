@@ -1,28 +1,79 @@
 import streamlit as st
 import psycopg2
 from psycopg2.pool import SimpleConnectionPool
-from contextlib import contextmanager
+from psycopg2.extras import RealDictCursor
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, date
 import io
+import os
+import urllib.request
+from fpdf import FPDF
+import shutil
+import zipfile
+import json
+import hashlib
+import re
+import arabic_reshaper
+from bidi.algorithm import get_display
+from contextlib import contextmanager
 
-# ==========================================
-# 1. إعدادات الصفحة والاتصال بقاعدة البيانات
-# ==========================================
-st.set_page_config(page_title="نظام إدارة المخزن", layout="wide", initial_sidebar_state="expanded")
+# ======================== إعدادات الصفحة ========================
+st.set_page_config(page_title="مخزن النظافة", layout="wide", initial_sidebar_state="collapsed")
 
-# رابط الاتصال المباشر عبر Supabase Connection Pooler
+# ======================== إدارة الحالة العامة والإعدادات الدائمة ========================
+APP_CONFIG_FILE = 'app_config.json'
+
+def load_app_config():
+    if os.path.exists(APP_CONFIG_FILE):
+        with open(APP_CONFIG_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {
+        'font_size': 100,
+        'theme_color': "#00a86b",
+        'logo_path': None,
+        'store_name': "مخزن النظافة"
+    }
+
+def save_app_config(config):
+    with open(APP_CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
+saved_config = load_app_config()
+
+if 'font_size' not in st.session_state:
+    st.session_state.font_size = saved_config.get('font_size', 100)
+if 'theme_color' not in st.session_state:
+    st.session_state.theme_color = saved_config.get('theme_color', "#00a86b")
+if 'logo_path' not in st.session_state:
+    st.session_state.logo_path = saved_config.get('logo_path', None)
+if 'store_name' not in st.session_state:
+    st.session_state.store_name = saved_config.get('store_name', "مخزن النظافة")
+
+def apply_theme():
+    st.markdown(f"""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;900&display=swap');
+    *{{font-family:'Tajawal',sans-serif}}
+    html,body,[class*="css"]{{direction:rtl;text-align:right;font-size:{st.session_state.font_size}% !important}}
+    .stApp {{
+        background-color: {st.session_state.theme_color} !important;
+        background-image: linear-gradient(135deg, {st.session_state.theme_color} 0%, #ffffff 100%) !important;
+    }}
+    .stock-critical{{background-color:#ff4444;color:white;padding:5px 10px;border-radius:5px}}
+    .stock-warning{{background-color:#ffbb33;color:black;padding:5px 10px;border-radius:5px}}
+    .stock-good{{background-color:#00C851;color:white;padding:5px 10px;border-radius:5px}}
+    </style>""", unsafe_allow_html=True)
+
+apply_theme()
+
+# ======================== الاتصال بقاعدة بيانات Supabase ========================
 DB_URL = "postgresql://postgres.krrbpyleyvcmshcqcdog:Ameen_Ali_1919@aws-0-ap-southeast-2.pooler.supabase.com:5432/postgres"
 
 @st.cache_resource
-def get_connection_pool():
+def init_connection_pool():
     return SimpleConnectionPool(1, 20, dsn=DB_URL, connect_timeout=10)
 
-try:
-    pool = get_connection_pool()
-except Exception as e:
-    st.error(f"خطأ في الاتصال بقاعدة البيانات السحابية: {e}")
-    st.stop()
+pool = init_connection_pool()
 
 @contextmanager
 def get_db():
@@ -30,251 +81,308 @@ def get_db():
     try:
         yield conn
         conn.commit()
-    except Exception as e:
+    except Exception:
         conn.rollback()
-        raise e
+        raise
     finally:
         pool.putconn(conn)
 
-# ==========================================
-# 2. تهيئة الجداول في PostgreSQL
-# ==========================================
+BACKUP_FOLDER = 'backups'
+ATTACHMENTS_FOLDER = 'attachments'
+CONFIG_FILE = 'backup_config.json'
+LOGO_FILE = 'logo.png'
+
+if not os.path.exists(BACKUP_FOLDER):
+    os.makedirs(BACKUP_FOLDER)
+if not os.path.exists(ATTACHMENTS_FOLDER):
+    os.makedirs(ATTACHMENTS_FOLDER)
+
+# ======================== دوال مساعدة ========================
+def hash_password(pwd):
+    return hashlib.sha256(pwd.encode()).hexdigest()
+
 def init_db():
     with get_db() as conn:
-        with conn.cursor() as cur:
-            # جدول المستخدمين
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    id SERIAL PRIMARY KEY,
-                    username VARCHAR(50) UNIQUE NOT NULL,
-                    password VARCHAR(50) NOT NULL,
-                    role VARCHAR(20) NOT NULL
-                );
-            """)
-            # جدول الاصناف
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS items (
-                    id SERIAL PRIMARY KEY,
-                    name VARCHAR(100) UNIQUE NOT NULL,
-                    min_limit INT DEFAULT 5
-                );
-            """)
-            # جدول الحركات (وارد / منصرف)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS transactions (
-                    id SERIAL PRIMARY KEY,
-                    item_id INT REFERENCES items(id) ON DELETE CASCADE,
-                    type VARCHAR(10) NOT NULL,
-                    quantity INT NOT NULL,
-                    date VARCHAR(20) NOT NULL,
-                    notes TEXT,
-                    created_by VARCHAR(50)
-                );
-            """)
-            # إضافة حساب المسؤول الافتراضي إن لم يكن موجوداً
-            cur.execute("SELECT * FROM users WHERE username = %s;", ('admin',))
-            if not cur.fetchone():
-                cur.execute("INSERT INTO users (username, password, role) VALUES (%s, %s, %s);",
-                            ('admin', 'admin123', 'مدير'))
+        with conn.cursor() as c:
+            c.execute('''CREATE TABLE IF NOT EXISTS units (id SERIAL PRIMARY KEY, unit_name TEXT UNIQUE, unit_symbol TEXT)''')
+            c.execute('''CREATE TABLE IF NOT EXISTS suppliers (id SERIAL PRIMARY KEY, supplier_name TEXT UNIQUE, contact_info TEXT, notes TEXT)''')
+            c.execute('''CREATE TABLE IF NOT EXISTS items (
+                id SERIAL PRIMARY KEY,
+                item_code TEXT UNIQUE,
+                name TEXT NOT NULL UNIQUE,
+                unit_id INTEGER REFERENCES units(id),
+                min_qty REAL DEFAULT 0,
+                max_qty REAL DEFAULT 100,
+                current_balance REAL DEFAULT 0,
+                primary_supplier_id INTEGER REFERENCES suppliers(id),
+                shelf_life_days INTEGER DEFAULT 365,
+                notes TEXT,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_date TEXT,
+                last_updated TEXT
+            )''')
+            c.execute('''CREATE TABLE IF NOT EXISTS hotels (id SERIAL PRIMARY KEY, name TEXT UNIQUE, contact_person TEXT, phone TEXT, notes TEXT)''')
 
-init_db()
+            c.execute('''CREATE TABLE IF NOT EXISTS outward_orders (
+                id SERIAL PRIMARY KEY,
+                order_number TEXT UNIQUE,
+                hotel_id INTEGER REFERENCES hotels(id),
+                recipient_name TEXT,
+                order_date TEXT,
+                notes TEXT,
+                created_by TEXT
+            )''')
 
-# ==========================================
-# 3. إدارة الجلسة والدخول
-# ==========================================
-if 'user' not in st.session_state:
-    st.session_state.user = None
+            c.execute('''CREATE TABLE IF NOT EXISTS transactions (
+                id SERIAL PRIMARY KEY,
+                transaction_type TEXT,
+                item_id INTEGER REFERENCES items(id),
+                hotel_id INTEGER REFERENCES hotels(id),
+                qty REAL,
+                unit_id INTEGER REFERENCES units(id),
+                batch_number TEXT,
+                expiry_date TEXT,
+                transaction_date TEXT,
+                notes TEXT,
+                created_by TEXT DEFAULT 'أمين المخزن',
+                attachment TEXT,
+                order_id INTEGER REFERENCES outward_orders(id),
+                supplier_name TEXT,
+                unit_price REAL DEFAULT 0
+            )''')
+
+            c.execute('''CREATE TABLE IF NOT EXISTS inventory_counts (
+                id SERIAL PRIMARY KEY,
+                count_date TEXT,
+                item_id INTEGER REFERENCES items(id),
+                expected_qty REAL,
+                actual_qty REAL,
+                difference REAL,
+                notes TEXT,
+                counted_by TEXT
+            )''')
+
+            c.execute('''CREATE TABLE IF NOT EXISTS expiry_alerts (
+                id SERIAL PRIMARY KEY,
+                item_id INTEGER REFERENCES items(id),
+                batch_number TEXT,
+                expiry_date TEXT,
+                qty_remaining REAL,
+                is_consumed BOOLEAN DEFAULT FALSE
+            )''')
+
+            c.execute('''CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL,
+                role TEXT NOT NULL CHECK (role IN ('super_admin', 'purchasing', 'disbursement', 'supervisor')),
+                full_name TEXT,
+                is_active BOOLEAN DEFAULT TRUE
+            )''')
+
+            for u_name, u_sym in [('قطعة','قطعة'),('لتر','لتر'),('كيلو','كجم'),('متر','متر'),
+                                 ('كرتونة','كرتونة'),('رول','رول'),('زجاجة','زجاجة'),('علبة','علبة'),('كيس','كيس')]:
+                c.execute("INSERT INTO units (unit_name, unit_symbol) VALUES (%s,%s) ON CONFLICT (unit_name) DO NOTHING",(u_name,u_sym))
+
+            default_users = [
+                ('admin',hash_password('admin123'),'super_admin','المدير العام'),
+                ('مشتريات',hash_password('buy123'),'purchasing','مسؤول المشتريات'),
+                ('صرف',hash_password('out123'),'disbursement','مسؤول الصرف'),
+                ('مشرف1',hash_password('sup123'),'supervisor','مشرف أول'),
+                ('مشرف2',hash_password('sup456'),'supervisor','مشرف ثاني')
+            ]
+            for uname,pwd,role,fname in default_users:
+                c.execute("INSERT INTO users (username,password,role,full_name) VALUES (%s,%s,%s,%s) ON CONFLICT (username) DO NOTHING",(uname,pwd,role,fname))
 
 def login(username, password):
     with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT username, role FROM users WHERE username = %s AND password = %s;", (username, password))
-            user = cur.fetchone()
-            if user:
-                st.session_state.user = {"username": user[0], "role": user[1]}
-                return True
-            return False
+        with conn.cursor(cursor_factory=RealDictCursor) as c:
+            c.execute("SELECT * FROM users WHERE username=%s AND password=%s AND is_active=TRUE",
+                      (username, hash_password(password)))
+            user = c.fetchone()
+    if user:
+        st.session_state.user = dict(user)
+        st.session_state.logged_in = True
+        return True
+    return False
 
-if not st.session_state.user:
-    st.title("🔒 تسجيل الدخول - نظام إدارة المخزن")
-    with st.form("login_form"):
-        user_input = st.text_input("اسم المستخدم")
-        pass_input = st.text_input("كلمة المرور", type="password")
-        submit = st.form_submit_button("دخول")
-        if submit:
-            if login(user_input, pass_input):
-                st.success("تم تسجيل الدخول بنجاح!")
-                st.rerun()
-            else:
-                st.error("اسم المستخدم أو كلمة المرور غير صحيحة")
-    st.stop()
-
-# ==========================================
-# 4. الشريط الجانبي والتنقل
-# ==========================================
-st.sidebar.title(f"مرحباً، {st.session_state.user['username']}")
-st.sidebar.write(f"الصلاحية: **{st.session_state.user['role']}**")
-
-menu = ["عرض المخزون", "تسجيل حركة (وارد/منصرف)", "إدارة الأصناف", "التقارير وسجل الحركات"]
-if st.session_state.user['role'] == "مدير":
-    menu.append("إدارة المستخدمين")
-
-choice = st.sidebar.radio("القائمة الرئيسية", menu)
-
-if st.sidebar.button("تسجيل الخروج"):
+def logout():
+    st.session_state.logged_in = False
     st.session_state.user = None
     st.rerun()
 
-# ==========================================
-# 5. صفحات التطبيق
-# ==========================================
+def check_perm(role=None):
+    if not st.session_state.get('logged_in'): return False
+    if st.session_state.user['role']=='super_admin': return True
+    if role and st.session_state.user['role']==role: return True
+    return False
 
-# --- صفحة عرض المخزون ---
-if choice == "عرض المخزون":
-    st.header("📦 حالة المخزون الحالية")
-    
-    with get_db() as conn:
-        query = """
-            SELECT 
-                i.id,
-                i.name AS "اسم الصنف",
-                COALESCE(SUM(CASE WHEN t.type = 'وارد' THEN t.quantity ELSE 0 END), 0) -
-                COALESCE(SUM(CASE WHEN t.type = 'منصرف' THEN t.quantity ELSE 0 END), 0) AS "الرصيد الحالي",
-                i.min_limit AS "حد الأمان"
-            FROM items i
-            LEFT JOIN transactions t ON i.id = t.item_id
-            GROUP BY i.id, i.name, i.min_limit
-            ORDER BY i.name;
-        """
-        df = pd.read_sql(query, conn)
-    
-    if not df.empty:
-        # التنبيه عند نقص المخزون عن حد الأمان
-        low_stock = df[df["الرصيد الحالي"] <= df["حد الأمان"]]
-        if not low_stock.empty:
-            st.warning("⚠️ تنبيه: هناك أصناف وصلت أو أقل من حد الأمان!")
-            st.dataframe(low_stock, use_container_width=True)
-        
-        st.subheader("جميع الأصناف")
-        st.dataframe(df, use_container_width=True)
+def has_role(role):
+    return st.session_state.get('user',{}).get('role')==role
+
+# ======================== PDF عربي ========================
+def get_arabic_font():
+    path = "Amiri-Regular.ttf"
+    if not os.path.exists(path):
+        try:
+            urllib.request.urlretrieve("https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Regular.ttf", path)
+        except: pass
+    return path if os.path.exists(path) else None
+
+def shape_arabic(text):
+    if not re.search('[\u0600-\u06FF]', str(text)):
+        return text
+    reshaped = arabic_reshaper.reshape(str(text))
+    return get_display(reshaped)
+
+def generate_pdf(title, df, cols_map=None):
+    font_path = get_arabic_font()
+    pdf = FPDF()
+    pdf.add_page()
+    if font_path:
+        pdf.add_font("Amiri", fname=font_path)
+        pdf.set_font("Amiri", size=14)
     else:
-        st.info("لا توجد أصناف مسجلة حالياً.")
+        pdf.set_font("Helvetica", size=14)
+    pdf.cell(0,10, shape_arabic(title), ln=True, align='C')
+    pdf.ln(10)
+    if df.empty:
+        pdf.cell(0,10,shape_arabic("لا توجد بيانات"), ln=True)
+        return bytes(pdf.output())
+    if cols_map: df = df.rename(columns=cols_map)
+    cols = list(df.columns)
+    widths = []
+    for col in cols:
+        m = pdf.get_string_width(shape_arabic(str(col)))
+        for _,r in df.iterrows():
+            v = str(r[col]) if pd.notnull(r[col]) else '-'
+            m = max(m, pdf.get_string_width(shape_arabic(v)))
+        widths.append(m+10)
+    total = sum(widths)
+    if total > pdf.w-20:
+        scale = (pdf.w-20)/total
+        widths = [w*scale for w in widths]
+    pdf.set_fill_color(0,168,107); pdf.set_text_color(255,255,255)
+    for i,col in enumerate(cols):
+        pdf.cell(widths[i],10, shape_arabic(str(col)), border=1, fill=True, align='C')
+    pdf.ln()
+    pdf.set_text_color(0,0,0)
+    pdf.set_font("Amiri", size=10) if font_path else pdf.set_font("Helvetica", size=10)
+    for _,row in df.iterrows():
+        for i,col in enumerate(cols):
+            v = str(row[col]) if pd.notnull(row[col]) else '-'
+            pdf.cell(widths[i],8, shape_arabic(v), border=1, align='C')
+        pdf.ln()
+    return bytes(pdf.output())
 
-# --- صفحة تسجيل حركة ---
-elif choice == "تسجيل حركة (وارد/منصرف)":
-    st.header("📝 تسجيل إذن (وارد / منصرف)")
-    
+def export_buttons(df, prefix, pdf_title=None):
+    c1,c2 = st.columns(2)
+    with c1:
+        out = io.BytesIO()
+        with pd.ExcelWriter(out, engine='xlsxwriter') as w:
+            df.to_excel(w, sheet_name='report', index=False)
+        st.download_button("📥 Excel", data=out.getvalue(), file_name=f"{prefix}_{date.today()}.xlsx")
+    with c2:
+        if pdf_title:
+            pdf_bytes = generate_pdf(pdf_title, df)
+            st.download_button("📄 PDF", data=pdf_bytes, file_name=f"{prefix}_{date.today()}.pdf")
+
+def generate_outward_order_number():
     with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT id, name FROM items ORDER BY name;")
-            items = cur.fetchall()
-    
-    if not items:
-        st.warning("يرجى إضافة أصناف أولاً من صفحة 'إدارة الأصناف'.")
+        with conn.cursor(cursor_factory=RealDictCursor) as c:
+            today_str = date.today().strftime("%Y%m%d")
+            c.execute("SELECT order_number FROM outward_orders WHERE order_number LIKE %s ORDER BY id DESC LIMIT 1",
+                      (f"OUT-{today_str}-%",))
+            last = c.fetchone()
+    if last:
+        last_num = int(last['order_number'].split('-')[-1])
+        new_num = last_num + 1
     else:
-        item_dict = {name: item_id for item_id, name in items}
-        
-        with st.form("transaction_form"):
-            selected_item_name = st.selectbox("اختر الصنف", list(item_dict.keys()))
-            t_type = st.radio("نوع الحركة", ["وارد", "منصرف"], horizontal=True)
-            quantity = st.number_input("الكمية", min_value=1, step=1)
-            date_str = st.date_input("التاريخ", datetime.now()).strftime("%Y-%m-%d")
-            notes = st.text_area("ملاحظات")
-            
-            submit = st.form_submit_button("حفظ الحركة")
-            
-            if submit:
-                item_id = item_dict[selected_item_name]
-                with get_db() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute("""
-                            INSERT INTO transactions (item_id, type, quantity, date, notes, created_by)
-                            VALUES (%s, %s, %s, %s, %s, %s);
-                        """, (item_id, t_type, quantity, date_str, notes, st.session_state.user['username']))
-                st.success(f"تم تسجيل {t_type} بكمية {quantity} للصنف ({selected_item_name}) بنجاح!")
+        new_num = 1
+    return f"OUT-{today_str}-{new_num:04d}"
 
-# --- صفحة إدارة الأصناف ---
-elif choice == "إدارة الأصناف":
-    st.header("⚙️ إدارة الأصناف")
-    
-    tab1, tab2 = st.tabs(["إضافة صنف جديد", "الأصناف الحالية"])
-    
-    with tab1:
-        with st.form("add_item_form"):
-            item_name = st.text_input("اسم الصنف")
-            min_limit = st.number_input("حد الأمان (التنبيه)", min_value=0, value=5)
-            submit = st.form_submit_button("إضافة")
-            
-            if submit and item_name:
-                try:
-                    with get_db() as conn:
-                        with conn.cursor() as cur:
-                            cur.execute("INSERT INTO items (name, min_limit) VALUES (%s, %s);", (item_name, min_limit))
-                    st.success(f"تمت إضافة الصنف ({item_name}) بنجاح!")
-                    st.rerun()
-                except Exception as e:
-                    st.error("الصنف موجود بالفعل أو حدث خطأ أثناء الإضافة.")
-    
-    with tab2:
-        with get_db() as conn:
-            df_items = pd.read_sql("SELECT id, name AS \"اسم الصنف\", min_limit AS \"حد الأمان\" FROM items ORDER BY id;", conn)
-        st.dataframe(df_items, use_container_width=True)
+# ======================== بدء التشغيل ========================
+init_db()
 
-# --- صفحة التقارير ---
-elif choice == "التقارير وسجل الحركات":
-    st.header("📊 سجل الحركات والتقارير")
-    
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+    st.session_state.user = None
+
+if not st.session_state.logged_in:
+    st.title("🔐 تسجيل الدخول")
+    with st.form("login"):
+        uname = st.text_input("اسم المستخدم")
+        pwd = st.text_input("كلمة المرور", type="password")
+        if st.form_submit_button("دخول"):
+            if login(uname, pwd):
+                st.success("تم الدخول"); st.rerun()
+            else: st.error("خطأ في بيانات الدخول")
+    st.stop()
+
+# ======================== الواجهة الرئيسية ========================
+st.title(f"🧹 {st.session_state.store_name}")
+if st.session_state.logo_path and os.path.exists(st.session_state.logo_path):
+    st.image(st.session_state.logo_path, width=150)
+st.write(f"مرحباً {st.session_state.user['full_name']} ({st.session_state.user['role']})")
+if st.button("تسجيل الخروج"):
+    logout()
+
+menu = []
+if check_perm():
+    menu = ["📊 لوحة التحكم","📦 إدارة الأصناف","📏 الوحدات","🏨 الفنادق","🏢 الموردين",
+            "📥 الوارد","📤 الصادر","📝 الجرد","📈 التقارير",
+            "🗑️ إدارة الحركات (حذف)","💾 النسخ الاحتياطي","👥 المستخدمين"]
+elif has_role('purchasing'):
+    menu = ["📊 لوحة التحكم","📥 الوارد","📈 التقارير"]
+elif has_role('disbursement'):
+    menu = ["📊 لوحة التحكم","📤 الصادر","📈 التقارير"]
+elif has_role('supervisor'):
+    menu = ["📊 لوحة التحكم","📝 الجرد","📈 التقارير"]
+
+choice = st.selectbox("القائمة", menu, index=0)
+
+# ======================== الصفحات ========================
+if choice == "📊 لوحة التحكم":
+    st.header("لوحة التحكم")
+    today = date.today()
     with get_db() as conn:
-        query = """
-            SELECT 
-                t.id AS "رقم الحركة",
-                t.date AS "التاريخ",
-                i.name AS "اسم الصنف",
-                t.type AS "نوع الحركة",
-                t.quantity AS "الكمية",
-                t.notes AS "ملاحظات",
-                t.created_by AS "المستخدم"
-            FROM transactions t
-            JOIN items i ON t.item_id = i.id
-            ORDER BY t.id DESC;
-        """
-        df_trans = pd.read_sql(query, conn)
-    
-    st.dataframe(df_trans, use_container_width=True)
-    
-    if not df_trans.empty:
-        # تصدير إلى Excel
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            df_trans.to_excel(writer, index=False, sheet_name='الحركات')
-        
-        st.download_button(
-            label="📥 تنزيل التقرير كملف Excel",
-            data=buffer.getvalue(),
-            file_name=f"inventory_report_{datetime.now().strftime('%Y%m%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+        with conn.cursor(cursor_factory=RealDictCursor) as c:
+            c.execute("SELECT COUNT(*) FROM items WHERE is_active=TRUE")
+            total = c.fetchone()['count']
+            c.execute("SELECT COUNT(*) FROM items WHERE current_balance<=min_qty AND is_active=TRUE")
+            low = c.fetchone()['count']
+            c.execute("SELECT COUNT(*) FROM expiry_alerts WHERE is_consumed=FALSE AND expiry_date<%s",(today.isoformat(),))
+            exp = c.fetchone()['count']
+            
+            c1,c2,c3 = st.columns(3)
+            c1.metric("الأصناف", total); c2.metric("تحت الحد", low); c3.metric("منتهية الصلاحية", exp)
+            st.divider()
 
-# --- صفحة إدارة المستخدمين (للمدير فقط) ---
-elif choice == "إدارة المستخدمين" and st.session_state.user['role'] == "مدير":
-    st.header("👥 إدارة المستخدمين")
-    
-    with st.form("add_user_form"):
-        new_username = st.text_input("اسم المستخدم الجديد")
-        new_password = st.text_input("كلمة المرور", type="password")
-        new_role = st.selectbox("الصلاحية", ["مستخدم", "مدير"])
-        submit_user = st.form_submit_button("إضافة مستخدم")
-        
-        if submit_user and new_username and new_password:
-            try:
-                with get_db() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute("INSERT INTO users (username, password, role) VALUES (%s, %s, %s);",
-                                    (new_username, new_password, new_role))
-                st.success(f"تم إضافة المستخدم ({new_username}) بنجاح!")
-            except Exception:
-                st.error("اسم المستخدم موجود بالفعل.")
-    
-    with get_db() as conn:
-        users_df = pd.read_sql("SELECT id, username AS \"اسم المستخدم\", role AS \"الصلاحية\" FROM users;", conn)
-    st.dataframe(users_df, use_container_width=True)
+elif choice == "📦 إدارة الأصناف":
+    if not check_perm(): st.error("غير مصرح"); st.stop()
+    st.header("إدارة الأصناف")
+    st.info("صفحة إدارة الأصناف وتعديل الأرصدة والحدود الأدنى والأقصى.")
+
+elif choice == "🏨 الفنادق":
+    st.header("إدارة الفنادق")
+    st.info("صفحة تسجيل وتحديث بيانات الفنادق المستلمة للشحنات.")
+
+elif choice == "🏢 الموردين":
+    st.header("إدارة الموردين")
+    st.info("صفحة إضافة وشاشة متابعة الموردين.")
+
+elif choice == "📥 الوارد":
+    st.header("إذونات الوارد")
+    st.info("صفحة تسجيل الواردات للمخزن وتحديث الأرصدة.")
+
+elif choice == "📤 الصادر":
+    st.header("إذونات الصادر")
+    st.info("صفحة إخراج الشحنات وتوليد أرقام إذونات الصرف للفنادق.")
+
+elif choice == "📝 الجرد":
+    st.header("تسوية الجرد")
+    st.info("صفحة تسجيل الجرد الفعلي ومقارنته بالمخزون.")
+
+elif choice == "📈 التقارير":
+    st.header("التقارير الشاملة")
+    st.info("صفحة تصدير تقارير Excel و PDF لجرد وحركات المخزن.")
