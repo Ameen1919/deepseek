@@ -180,7 +180,10 @@ def init_db():
                 is_active BOOLEAN DEFAULT TRUE
             )''')
 
-            # ترقية جدول المستخدمين في حال وجوده سابقاً بدون أعمدة جديدة
+            # تعديل أنواع الحقول لضمان استيعاب أطوال النصوص المشفرة والصلاحيات
+            c.execute('''ALTER TABLE users ALTER COLUMN username TYPE TEXT;''')
+            c.execute('''ALTER TABLE users ALTER COLUMN password TYPE TEXT;''')
+            c.execute('''ALTER TABLE users ALTER COLUMN role TYPE TEXT;''')
             c.execute('''ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name TEXT;''')
             c.execute('''ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;''')
 
