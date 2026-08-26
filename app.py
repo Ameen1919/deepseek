@@ -175,10 +175,14 @@ def init_db():
                 id SERIAL PRIMARY KEY,
                 username TEXT UNIQUE NOT NULL,
                 password TEXT NOT NULL,
-                role TEXT NOT NULL CHECK (role IN ('super_admin', 'purchasing', 'disbursement', 'supervisor')),
+                role TEXT NOT NULL,
                 full_name TEXT,
                 is_active BOOLEAN DEFAULT TRUE
             )''')
+
+            # ترقية جدول المستخدمين في حال وجوده سابقاً بدون أعمدة جديدة
+            c.execute('''ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name TEXT;''')
+            c.execute('''ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;''')
 
             for u_name, u_sym in [('قطعة','قطعة'),('لتر','لتر'),('كيلو','كجم'),('متر','متر'),
                                  ('كرتونة','كرتونة'),('رول','رول'),('زجاجة','زجاجة'),('علبة','علبة'),('كيس','كيس')]:
@@ -286,20 +290,6 @@ def export_buttons(df, prefix, pdf_title=None):
         if pdf_title:
             pdf_bytes = generate_pdf(pdf_title, df)
             st.download_button("📄 PDF", data=pdf_bytes, file_name=f"{prefix}_{date.today()}.pdf")
-
-def generate_outward_order_number():
-    with get_db() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as c:
-            today_str = date.today().strftime("%Y%m%d")
-            c.execute("SELECT order_number FROM outward_orders WHERE order_number LIKE %s ORDER BY id DESC LIMIT 1",
-                      (f"OUT-{today_str}-%",))
-            last = c.fetchone()
-    if last:
-        last_num = int(last['order_number'].split('-')[-1])
-        new_num = last_num + 1
-    else:
-        new_num = 1
-    return f"OUT-{today_str}-{new_num:04d}"
 
 # ======================== بدء التشغيل ========================
 init_db()
