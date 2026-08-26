@@ -6,6 +6,7 @@ import pandas as pd
 from datetime import datetime, date
 import io
 import os
+import sqlite3
 import urllib.request
 from fpdf import FPDF
 import shutil
@@ -20,36 +21,21 @@ from contextlib import contextmanager
 # ======================== إعدادات الصفحة ========================
 st.set_page_config(page_title="مخزن النظافة", layout="wide", initial_sidebar_state="expanded")
 
-# ======================== إدارة الحالة العامة والإعدادات الدائمة ========================
+# ======================== إدارة الحالة العامة والإعدادات ========================
 APP_CONFIG_FILE = 'app_config.json'
 
 def load_app_config():
     if os.path.exists(APP_CONFIG_FILE):
         with open(APP_CONFIG_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
-    return {
-        'font_size': 100,
-        'theme_color': "#00a86b",
-        'logo_path': None,
-        'store_name': "مخزن النظافة"
-    }
-
-def save_app_config(config):
-    with open(APP_CONFIG_FILE, 'w', encoding='utf-8') as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
+    return {'font_size': 100, 'theme_color': "#00a86b", 'logo_path': None, 'store_name': "مخزن النظافة"}
 
 saved_config = load_app_config()
 
-if 'font_size' not in st.session_state:
-    st.session_state.font_size = saved_config.get('font_size', 100)
-if 'theme_color' not in st.session_state:
-    st.session_state.theme_color = saved_config.get('theme_color', "#00a86b")
-if 'logo_path' not in st.session_state:
-    st.session_state.logo_path = saved_config.get('logo_path', None)
-if 'store_name' not in st.session_state:
-    st.session_state.store_name = saved_config.get('store_name', "مخزن النظافة")
+if 'font_size' not in st.session_state: st.session_state.font_size = saved_config.get('font_size', 100)
+if 'theme_color' not in st.session_state: st.session_state.theme_color = saved_config.get('theme_color', "#00a86b")
+if 'store_name' not in st.session_state: st.session_state.store_name = saved_config.get('store_name', "مخزن النظافة")
 
-# إصلاح الألوان والتباين لضمان عدم اختفاء الأيقونات والنصوص
 def apply_theme():
     st.markdown(f"""
     <style>
@@ -57,7 +43,6 @@ def apply_theme():
     * {{ font-family: 'Tajawal', sans-serif; }}
     html, body, [class*="css"] {{ direction: rtl; text-align: right; font-size: {st.session_state.font_size}% !important; }}
     
-    /* الأزرار والأيقونات */
     .stButton > button {{
         color: #ffffff !important;
         background-color: #008c56 !important;
@@ -67,16 +52,11 @@ def apply_theme():
     .stButton > button:hover {{
         background-color: #006b42 !important;
         color: #ffffff !important;
-        border-color: #004d2f !important;
     }}
     .stDownloadButton > button {{
         color: #ffffff !important;
         background-color: #0275d8 !important;
         border-radius: 8px !important;
-    }}
-    .stDownloadButton > button:hover {{
-        background-color: #025aa5 !important;
-        color: #ffffff !important;
     }}
     </style>""", unsafe_allow_html=True)
 
@@ -105,13 +85,10 @@ def get_db():
 
 BACKUP_FOLDER = 'backups'
 ATTACHMENTS_FOLDER = 'attachments'
+os.makedirs(BACKUP_FOLDER, exist_ok=True)
+os.makedirs(ATTACHMENTS_FOLDER, exist_ok=True)
 
-if not os.path.exists(BACKUP_FOLDER):
-    os.makedirs(BACKUP_FOLDER)
-if not os.path.exists(ATTACHMENTS_FOLDER):
-    os.makedirs(ATTACHMENTS_FOLDER)
-
-# ======================== دوال مساعدة ========================
+# ======================== دوال التشفير والقواعد ========================
 def hash_password(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
 
@@ -190,14 +167,13 @@ def init_db():
                 is_active BOOLEAN DEFAULT TRUE
             )''')
 
-            # ضمان وجود كافة الأعمدة في جدول items لتفادي UndefinedColumn
+            # ضمان وجود كافة الأعمدة
             c.execute('''ALTER TABLE items ADD COLUMN IF NOT EXISTS item_code TEXT;''')
             c.execute('''ALTER TABLE items ADD COLUMN IF NOT EXISTS min_qty REAL DEFAULT 0;''')
             c.execute('''ALTER TABLE items ADD COLUMN IF NOT EXISTS max_qty REAL DEFAULT 100;''')
             c.execute('''ALTER TABLE items ADD COLUMN IF NOT EXISTS current_balance REAL DEFAULT 0;''')
             c.execute('''ALTER TABLE items ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;''')
 
-            # ضمان وجود كافة الأعمدة في جدول users
             c.execute('''ALTER TABLE users ALTER COLUMN username TYPE TEXT;''')
             c.execute('''ALTER TABLE users ALTER COLUMN password TYPE TEXT;''')
             c.execute('''ALTER TABLE users ALTER COLUMN role TYPE TEXT;''')
@@ -269,7 +245,7 @@ if not st.session_state.logged_in:
             else: st.error("خطأ في بيانات الدخول، يرجى التثبت من اسم المستخدم وكلمة المرور.")
     st.stop()
 
-# ======================== الواجهة الرئيسية والقائمة ========================
+# ======================== القائمة الرئيسية ========================
 st.sidebar.title(f"🧹 {st.session_state.store_name}")
 st.sidebar.write(f"👤 **{st.session_state.user['full_name']}**")
 if st.sidebar.button("🚪 تسجيل الخروج"):
@@ -327,20 +303,66 @@ elif choice == "💾 النسخ الاحتياطي":
             st.download_button("⬇️ تحميل النسخة الاحتياطية (Excel)", data=out.getvalue(), file_name=f"backup_{date.today()}.xlsx")
 
     with col2:
-        st.subheader("📤 رفع نسخة احتياطية")
-        uploaded_file = st.file_uploader("اختر ملف النسخة الاحتياطية", type=['xlsx', 'json'])
+        st.subheader("📤 رفع واستعادة قاعدة البيانات القديمة")
+        uploaded_file = st.file_uploader("اختر ملف النسخة الاحتياطية (.db, .zip, .xlsx)", type=['db', 'zip', 'xlsx'])
         if uploaded_file is not None:
-            st.success("تم استلام الملف وجاري معالجته...")
+            try:
+                # التحقق إذا كان ملف مضغوط يحتوي على قاعدة بيانات SQLite
+                if uploaded_file.name.endswith('.zip') or uploaded_file.name.endswith('.db'):
+                    file_bytes = uploaded_file.read()
+                    temp_db_path = "temp_restore.db"
+                    
+                    if zipfile.is_zipfile(io.BytesIO(file_bytes)):
+                        with zipfile.ZipFile(io.BytesIO(file_bytes), 'r') as z:
+                            for filename in z.namelist():
+                                if filename.endswith('.db'):
+                                    with open(temp_db_path, "wb") as f:
+                                        f.write(z.read(filename))
+                                    break
+                    else:
+                        with open(temp_db_path, "wb") as f:
+                            f.write(file_bytes)
+                    
+                    # استخراج البيانات من SQLite ونقلها إلى Supabase
+                    if os.path.exists(temp_db_path):
+                        sq_conn = sqlite3.connect(temp_db_path)
+                        sq_curr = sq_conn.cursor()
+                        
+                        # قراءة جدول الأصناف
+                        try:
+                            sq_curr.execute("SELECT name, current_balance, min_qty, max_qty FROM items")
+                            imported_items = sq_curr.fetchall()
+                            
+                            with get_db() as pg_conn:
+                                with pg_conn.cursor() as pg_c:
+                                    for item in imported_items:
+                                        pg_c.execute("""
+                                            INSERT INTO items (name, current_balance, min_qty, max_qty, is_active)
+                                            VALUES (%s, %s, %s, %s, TRUE)
+                                            ON CONFLICT (name) DO UPDATE 
+                                            SET current_balance = EXCLUDED.current_balance,
+                                                min_qty = EXCLUDED.min_qty,
+                                                max_qty = EXCLUDED.max_qty;
+                                        """, item)
+                            st.success(f"✅ تم استعادة واستيراد {len(imported_items)} صنف بنجاح إلى قاعدة البيانات الجديدة!")
+                        except Exception as e:
+                            st.warning("⚠️ الملف مقبول ولكن يحتوي على هيكل مختلف: " + str(e))
+                        sq_conn.close()
+                        os.remove(temp_db_path)
+                
+                elif uploaded_file.name.endswith('.xlsx'):
+                    df = pd.read_excel(uploaded_file)
+                    st.success("تم قراءة ملف Excel بنجاح، يمكنك استيراده الآن.")
+            except Exception as ex:
+                st.error(f"حدث خطأ أثناء معالجة الملف: {ex}")
 
 elif choice == "👥 المستخدمين":
     if not check_perm(): st.error("غير مصرح"); st.stop()
     st.header("👥 إدارة المستخدمين والصلاحيات")
-    
     with get_db() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as c:
             c.execute("SELECT id, username, full_name, role, is_active FROM users")
             users_list = c.fetchall()
-    
     st.dataframe(pd.DataFrame(users_list), use_container_width=True)
 
 elif choice == "📦 إدارة الأصناف":
