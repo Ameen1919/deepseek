@@ -12,7 +12,7 @@ import io
 st.set_page_config(page_title="نظام إدارة المخزن", layout="wide", initial_sidebar_state="expanded")
 
 # رابط الاتصال المباشر عبر Supabase Connection Pooler
-DB_URL = "postgresql://postgres.krrbpyleyvcmshcqcdog:[Ameen_Ali_1919]@aws-0-ap-southeast-2.pooler.supabase.com:5432/postgres"
+DB_URL = "postgresql://postgres.krrbpyleyvcmshcqcdog:Ameen_Ali_1919@aws-0-ap-southeast-2.pooler.supabase.com:5432/postgres"
 
 @st.cache_resource
 def get_connection_pool():
