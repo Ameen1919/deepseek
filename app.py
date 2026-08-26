@@ -18,7 +18,7 @@ from bidi.algorithm import get_display
 from contextlib import contextmanager
 
 # ======================== إعدادات الصفحة ========================
-st.set_page_config(page_title="مخزن النظافة", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="مخزن النظافة", layout="wide", initial_sidebar_state="expanded")
 
 # ======================== إدارة الحالة العامة والإعدادات الدائمة ========================
 APP_CONFIG_FILE = 'app_config.json'
@@ -49,19 +49,35 @@ if 'logo_path' not in st.session_state:
 if 'store_name' not in st.session_state:
     st.session_state.store_name = saved_config.get('store_name', "مخزن النظافة")
 
+# إصلاح الألوان والتباين لضمان عدم اختفاء الأيقونات والنصوص
 def apply_theme():
     st.markdown(f"""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;900&display=swap');
-    *{{font-family:'Tajawal',sans-serif}}
-    html,body,[class*="css"]{{direction:rtl;text-align:right;font-size:{st.session_state.font_size}% !important}}
-    .stApp {{
-        background-color: {st.session_state.theme_color} !important;
-        background-image: linear-gradient(135deg, {st.session_state.theme_color} 0%, #ffffff 100%) !important;
+    * {{ font-family: 'Tajawal', sans-serif; }}
+    html, body, [class*="css"] {{ direction: rtl; text-align: right; font-size: {st.session_state.font_size}% !important; }}
+    
+    /* الأزرار والأيقونات */
+    .stButton > button {{
+        color: #ffffff !important;
+        background-color: #008c56 !important;
+        border-radius: 8px !important;
+        border: 1px solid #006b42 !important;
     }}
-    .stock-critical{{background-color:#ff4444;color:white;padding:5px 10px;border-radius:5px}}
-    .stock-warning{{background-color:#ffbb33;color:black;padding:5px 10px;border-radius:5px}}
-    .stock-good{{background-color:#00C851;color:white;padding:5px 10px;border-radius:5px}}
+    .stButton > button:hover {{
+        background-color: #006b42 !important;
+        color: #ffffff !important;
+        border-color: #004d2f !important;
+    }}
+    .stDownloadButton > button {{
+        color: #ffffff !important;
+        background-color: #0275d8 !important;
+        border-radius: 8px !important;
+    }}
+    .stDownloadButton > button:hover {{
+        background-color: #025aa5 !important;
+        color: #ffffff !important;
+    }}
     </style>""", unsafe_allow_html=True)
 
 apply_theme()
@@ -89,8 +105,6 @@ def get_db():
 
 BACKUP_FOLDER = 'backups'
 ATTACHMENTS_FOLDER = 'attachments'
-CONFIG_FILE = 'backup_config.json'
-LOGO_FILE = 'logo.png'
 
 if not os.path.exists(BACKUP_FOLDER):
     os.makedirs(BACKUP_FOLDER)
@@ -123,7 +137,6 @@ def init_db():
                 last_updated TEXT
             )''')
             c.execute('''CREATE TABLE IF NOT EXISTS hotels (id SERIAL PRIMARY KEY, name TEXT UNIQUE, contact_person TEXT, phone TEXT, notes TEXT)''')
-
             c.execute('''CREATE TABLE IF NOT EXISTS outward_orders (
                 id SERIAL PRIMARY KEY,
                 order_number TEXT UNIQUE,
@@ -133,7 +146,6 @@ def init_db():
                 notes TEXT,
                 created_by TEXT
             )''')
-
             c.execute('''CREATE TABLE IF NOT EXISTS transactions (
                 id SERIAL PRIMARY KEY,
                 transaction_type TEXT,
@@ -151,7 +163,6 @@ def init_db():
                 supplier_name TEXT,
                 unit_price REAL DEFAULT 0
             )''')
-
             c.execute('''CREATE TABLE IF NOT EXISTS inventory_counts (
                 id SERIAL PRIMARY KEY,
                 count_date TEXT,
@@ -162,7 +173,6 @@ def init_db():
                 notes TEXT,
                 counted_by TEXT
             )''')
-
             c.execute('''CREATE TABLE IF NOT EXISTS expiry_alerts (
                 id SERIAL PRIMARY KEY,
                 item_id INTEGER REFERENCES items(id),
@@ -171,7 +181,6 @@ def init_db():
                 qty_remaining REAL,
                 is_consumed BOOLEAN DEFAULT FALSE
             )''')
-
             c.execute('''CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
                 username TEXT UNIQUE NOT NULL,
@@ -181,8 +190,14 @@ def init_db():
                 is_active BOOLEAN DEFAULT TRUE
             )''')
 
-            # إضفاء التحديثات على الجداول في حال وجودها مسبقاً دون الأعمدة الجديدة
+            # ضمان وجود كافة الأعمدة في جدول items لتفادي UndefinedColumn
+            c.execute('''ALTER TABLE items ADD COLUMN IF NOT EXISTS item_code TEXT;''')
+            c.execute('''ALTER TABLE items ADD COLUMN IF NOT EXISTS min_qty REAL DEFAULT 0;''')
+            c.execute('''ALTER TABLE items ADD COLUMN IF NOT EXISTS max_qty REAL DEFAULT 100;''')
+            c.execute('''ALTER TABLE items ADD COLUMN IF NOT EXISTS current_balance REAL DEFAULT 0;''')
             c.execute('''ALTER TABLE items ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;''')
+
+            # ضمان وجود كافة الأعمدة في جدول users
             c.execute('''ALTER TABLE users ALTER COLUMN username TYPE TEXT;''')
             c.execute('''ALTER TABLE users ALTER COLUMN password TYPE TEXT;''')
             c.execute('''ALTER TABLE users ALTER COLUMN role TYPE TEXT;''')
@@ -236,73 +251,6 @@ def check_perm(role=None):
 def has_role(role):
     return st.session_state.get('user',{}).get('role')==role
 
-# ======================== PDF عربي ========================
-def get_arabic_font():
-    path = "Amiri-Regular.ttf"
-    if not os.path.exists(path):
-        try:
-            urllib.request.urlretrieve("https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Regular.ttf", path)
-        except: pass
-    return path if os.path.exists(path) else None
-
-def shape_arabic(text):
-    if not re.search('[\u0600-\u06FF]', str(text)):
-        return text
-    reshaped = arabic_reshaper.reshape(str(text))
-    return get_display(reshaped)
-
-def generate_pdf(title, df, cols_map=None):
-    font_path = get_arabic_font()
-    pdf = FPDF()
-    pdf.add_page()
-    if font_path:
-        pdf.add_font("Amiri", fname=font_path)
-        pdf.set_font("Amiri", size=14)
-    else:
-        pdf.set_font("Helvetica", size=14)
-    pdf.cell(0,10, shape_arabic(title), ln=True, align='C')
-    pdf.ln(10)
-    if df.empty:
-        pdf.cell(0,10,shape_arabic("لا توجد بيانات"), ln=True)
-        return bytes(pdf.output())
-    if cols_map: df = df.rename(columns=cols_map)
-    cols = list(df.columns)
-    widths = []
-    for col in cols:
-        m = pdf.get_string_width(shape_arabic(str(col)))
-        for _,r in df.iterrows():
-            v = str(r[col]) if pd.notnull(r[col]) else '-'
-            m = max(m, pdf.get_string_width(shape_arabic(v)))
-        widths.append(m+10)
-    total = sum(widths)
-    if total > pdf.w-20:
-        scale = (pdf.w-20)/total
-        widths = [w*scale for w in widths]
-    pdf.set_fill_color(0,168,107); pdf.set_text_color(255,255,255)
-    for i,col in enumerate(cols):
-        pdf.cell(widths[i],10, shape_arabic(str(col)), border=1, fill=True, align='C')
-    pdf.ln()
-    pdf.set_text_color(0,0,0)
-    pdf.set_font("Amiri", size=10) if font_path else pdf.set_font("Helvetica", size=10)
-    for _,row in df.iterrows():
-        for i,col in enumerate(cols):
-            v = str(row[col]) if pd.notnull(row[col]) else '-'
-            pdf.cell(widths[i],8, shape_arabic(v), border=1, align='C')
-        pdf.ln()
-    return bytes(pdf.output())
-
-def export_buttons(df, prefix, pdf_title=None):
-    c1,c2 = st.columns(2)
-    with c1:
-        out = io.BytesIO()
-        with pd.ExcelWriter(out, engine='xlsxwriter') as w:
-            df.to_excel(w, sheet_name='report', index=False)
-        st.download_button("📥 Excel", data=out.getvalue(), file_name=f"{prefix}_{date.today()}.xlsx")
-    with c2:
-        if pdf_title:
-            pdf_bytes = generate_pdf(pdf_title, df)
-            st.download_button("📄 PDF", data=pdf_bytes, file_name=f"{prefix}_{date.today()}.pdf")
-
 # ======================== بدء التشغيل ========================
 init_db()
 
@@ -315,18 +263,16 @@ if not st.session_state.logged_in:
     with st.form("login"):
         uname = st.text_input("اسم المستخدم")
         pwd = st.text_input("كلمة المرور", type="password")
-        if st.form_submit_button("دخول"):
+        if st.form_submit_button("🔑 دخول"):
             if login(uname, pwd):
                 st.success("تم الدخول بنجاح"); st.rerun()
             else: st.error("خطأ في بيانات الدخول، يرجى التثبت من اسم المستخدم وكلمة المرور.")
     st.stop()
 
-# ======================== الواجهة الرئيسية ========================
-st.title(f"🧹 {st.session_state.store_name}")
-if st.session_state.logo_path and os.path.exists(st.session_state.logo_path):
-    st.image(st.session_state.logo_path, width=150)
-st.write(f"مرحباً {st.session_state.user['full_name']} ({st.session_state.user['role']})")
-if st.button("تسجيل الخروج"):
+# ======================== الواجهة الرئيسية والقائمة ========================
+st.sidebar.title(f"🧹 {st.session_state.store_name}")
+st.sidebar.write(f"👤 **{st.session_state.user['full_name']}**")
+if st.sidebar.button("🚪 تسجيل الخروج"):
     logout()
 
 menu = []
@@ -341,11 +287,11 @@ elif has_role('disbursement'):
 elif has_role('supervisor'):
     menu = ["📊 لوحة التحكم","📝 الجرد","📈 التقارير"]
 
-choice = st.selectbox("القائمة", menu, index=0)
+choice = st.sidebar.radio("القائمة الرئيسية", menu)
 
 # ======================== الصفحات ========================
 if choice == "📊 لوحة التحكم":
-    st.header("لوحة التحكم")
+    st.header("📊 لوحة التحكم والمؤشرات")
     today = date.today()
     with get_db() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as c:
@@ -356,35 +302,71 @@ if choice == "📊 لوحة التحكم":
             c.execute("SELECT COUNT(*) FROM expiry_alerts WHERE is_consumed=FALSE AND expiry_date<%s",(today.isoformat(),))
             exp = c.fetchone()['count']
             
-            c1,c2,c3 = st.columns(3)
-            c1.metric("الأصناف", total); c2.metric("تحت الحد", low); c3.metric("منتهية الصلاحية", exp)
+            c1, c2, c3 = st.columns(3)
+            c1.metric("📦 إجمالي الأصناف", total)
+            c2.metric("⚠️ أصناف تحت الحد الأدنى", low)
+            c3.metric("🚨 منتهية الصلاحية", exp)
             st.divider()
 
-elif choice == "📦 إدارة الأصناف":
+elif choice == "💾 النسخ الاحتياطي":
     if not check_perm(): st.error("غير مصرح"); st.stop()
-    st.header("إدارة الأصناف")
-    st.info("صفحة إدارة الأصناف وتعديل الأرصدة والحدود الأدنى والأقصى.")
+    st.header("💾 إدارة النسخ الاحتياطي واستعادة البيانات")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("📥 إنتاج نسخة احتياطية جديدة")
+        if st.button("📦 إنشاء نسخة احتياطية الآن"):
+            with get_db() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as c:
+                    c.execute("SELECT * FROM items")
+                    items_data = c.fetchall()
+            df_items = pd.DataFrame(items_data)
+            out = io.BytesIO()
+            with pd.ExcelWriter(out, engine='xlsxwriter') as w:
+                df_items.to_excel(w, sheet_name='items', index=False)
+            st.download_button("⬇️ تحميل النسخة الاحتياطية (Excel)", data=out.getvalue(), file_name=f"backup_{date.today()}.xlsx")
+
+    with col2:
+        st.subheader("📤 رفع نسخة احتياطية")
+        uploaded_file = st.file_uploader("اختر ملف النسخة الاحتياطية", type=['xlsx', 'json'])
+        if uploaded_file is not None:
+            st.success("تم استلام الملف وجاري معالجته...")
+
+elif choice == "👥 المستخدمين":
+    if not check_perm(): st.error("غير مصرح"); st.stop()
+    st.header("👥 إدارة المستخدمين والصلاحيات")
+    
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as c:
+            c.execute("SELECT id, username, full_name, role, is_active FROM users")
+            users_list = c.fetchall()
+    
+    st.dataframe(pd.DataFrame(users_list), use_container_width=True)
+
+elif choice == "📦 إدارة الأصناف":
+    st.header("📦 إدارة الأصناف")
+    st.info("صفحة إضافة وتعديل بيانات الأصناف والمخزون.")
 
 elif choice == "🏨 الفنادق":
-    st.header("إدارة الفنادق")
-    st.info("صفحة تسجيل وتحديث بيانات الفنادق المستلمة للشحنات.")
+    st.header("🏨 إدارة الفنادق")
+    st.info("صفحة إدارة الفنادق المسجلة.")
 
 elif choice == "🏢 الموردين":
-    st.header("إدارة الموردين")
+    st.header("🏢 إدارة الموردين")
     st.info("صفحة إضافة وشاشة متابعة الموردين.")
 
 elif choice == "📥 الوارد":
-    st.header("إذونات الوارد")
+    st.header("📥 إذونات الوارد")
     st.info("صفحة تسجيل الواردات للمخزن وتحديث الأرصدة.")
 
 elif choice == "📤 الصادر":
-    st.header("إذونات الصادر")
-    st.info("صفحة إخراج الشحنات وتوليد أرقام إذونات الصرف للفنادق.")
+    st.header("📤 إذونات الصادر")
+    st.info("صفحة إخراج الشحنات وتوليد إذونات الصرف.")
 
 elif choice == "📝 الجرد":
-    st.header("تسوية الجرد")
+    st.header("📝 تسوية الجرد")
     st.info("صفحة تسجيل الجرد الفعلي ومقارنته بالمخزون.")
 
 elif choice == "📈 التقارير":
-    st.header("التقارير الشاملة")
-    st.info("صفحة تصدير تقارير Excel و PDF لجرد وحركات المخزن.")
+    st.header("📈 التقارير الشاملة")
+    st.info("صفحة تصدير تقارير Excel و PDF.")
