@@ -8,3 +8,4 @@ python-bidi>=0.4.2
 Pillow
 pydrive2>=1.15.0
 pyyaml
+psycopg2-binary
