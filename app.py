@@ -101,6 +101,7 @@ if not os.path.exists(ATTACHMENTS_FOLDER):
 def hash_password(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
 
+@st.cache_resource
 def init_db():
     with get_db() as conn:
         with conn.cursor() as c:
@@ -180,7 +181,8 @@ def init_db():
                 is_active BOOLEAN DEFAULT TRUE
             )''')
 
-            # تعديل أنواع الحقول
+            # إضفاء التحديثات على الجداول في حال وجودها مسبقاً دون الأعمدة الجديدة
+            c.execute('''ALTER TABLE items ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;''')
             c.execute('''ALTER TABLE users ALTER COLUMN username TYPE TEXT;''')
             c.execute('''ALTER TABLE users ALTER COLUMN password TYPE TEXT;''')
             c.execute('''ALTER TABLE users ALTER COLUMN role TYPE TEXT;''')
@@ -199,7 +201,6 @@ def init_db():
                 ('مشرف2',hash_password('sup456'),'supervisor','مشرف ثاني')
             ]
             
-            # تحديث أو إضافة المستخدمين والتأكد من تحديث كلمة المرور للحساب الرئيسية
             for uname,pwd,role,fname in default_users:
                 c.execute("""
                     INSERT INTO users (username, password, role, full_name, is_active)
@@ -207,6 +208,7 @@ def init_db():
                     ON CONFLICT (username) DO UPDATE 
                     SET password = EXCLUDED.password, role = EXCLUDED.role, full_name = EXCLUDED.full_name, is_active = TRUE;
                 """, (uname, pwd, role, fname))
+    return True
 
 def login(username, password):
     with get_db() as conn:
